@@ -4,10 +4,22 @@
  * Chris Rivera <cmrivera@ufl.edu>
  * Robert Love <rml@tech9.net>
  *
- * This program is licensed under the GNU Library General Public License, v2
- *
  * Copyright (C) 2003 Chris Rivera
  * Copyright 2004, Albert Cahalan
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <stdlib.h>
@@ -18,6 +30,7 @@
 
 #include "slab.h"
 #include "procps.h"
+#include "alloc.h"
 
 #define SLABINFO_LINE_LEN	2048
 #define SLABINFO_VER_LEN	100
@@ -41,9 +54,7 @@ static struct slab_info *get_slabnode(void)
 		node = free_index;
 		free_index = free_index->next;
 	} else {
-		node = malloc(sizeof(struct slab_info));
-		if (!node)
-			perror("malloc");
+		node = xmalloc(sizeof(struct slab_info));
 	}
 
 	return node;
@@ -142,7 +153,8 @@ static int parse_slabinfo20(struct slab_info **list, struct slab_stat *stats,
 		if (entries++ == 0)
 			*list = curr;
 		else
-			prev->next = curr;
+			if (prev)
+				prev->next = curr;
 
 		assigned = sscanf(buffer, "%" STRINGIFY(SLAB_INFO_NAME_LEN)
 				"s %d %d %d %d %d : tunables %*d %*d %*d : \
@@ -219,7 +231,8 @@ static int parse_slabinfo11(struct slab_info **list, struct slab_stat *stats,
 		if (entries++ == 0)
 			*list = curr;
 		else
-			prev->next = curr;
+			if (prev)
+				prev->next = curr;
 
 		assigned = sscanf(buffer, "%" STRINGIFY(SLAB_INFO_NAME_LEN)
 				"s %d %d %d %d %d %d",
@@ -312,11 +325,13 @@ int get_slabinfo(struct slab_info **list, struct slab_stat *stats)
 
 	if (!fgets(buffer, SLABINFO_VER_LEN, slabfile)) {
 		fprintf(stderr, "cannot read from slabinfo\n");
+		fclose(slabfile);
 		return 1;
 	}
 
 	if (sscanf(buffer, "slabinfo - version: %d.%d", &major, &minor) != 2) {
 		fprintf(stderr, "not the good old slabinfo we know\n");
+		fclose(slabfile);
 		return 1;
 	}
 
@@ -328,6 +343,7 @@ int get_slabinfo(struct slab_info **list, struct slab_stat *stats)
 		ret = parse_slabinfo10(list, stats, slabfile);
 	else {
 		fprintf(stderr, "unrecognizable slabinfo version\n");
+		fclose(slabfile);
 		return 1;
 	}
 

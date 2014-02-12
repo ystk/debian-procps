@@ -1,13 +1,23 @@
-// Copyright (C) 1992-1998 by Michael K. Johnson, johnsonm@redhat.com
-// Copyright 1998-2003 Albert Cahalan
-//
-// This file is placed under the conditions of the GNU Library
-// General Public License, version 2, or any later version.
-// See file COPYING for information on distribution conditions.
-//
-// File for parsing top-level /proc entities. */
-//
-// June 2003, Fabian Frederick, disk and slab info
+/*
+ * File for parsing top-level /proc entities.
+ * Copyright (C) 1992-1998 by Michael K. Johnson, johnsonm@redhat.com
+ * Copyright 1998-2003 Albert Cahalan
+ * June 2003, Fabian Frederick, disk and slab info
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +27,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include "alloc.h"
 #include "version.h"
 #include "sysinfo.h" /* include self to verify prototypes */
 
@@ -29,8 +40,8 @@ long smp_num_cpus;     /* number of CPUs */
 #define BAD_OPEN_MESSAGE					\
 "Error: /proc must be mounted\n"				\
 "  To mount /proc at boot you need an /etc/fstab line like:\n"	\
-"      /proc   /proc   proc    defaults\n"			\
-"  In the meantime, run \"mount /proc /proc -t proc\"\n"
+"      proc   /proc   proc    defaults\n"			\
+"  In the meantime, run \"mount proc /proc -t proc\"\n"
 
 #define STAT_FILE    "/proc/stat"
 static int stat_fd = -1;
@@ -74,20 +85,51 @@ static char buf[2048];
 /***********************************************************************/
 int uptime(double *restrict uptime_secs, double *restrict idle_secs) {
     double up=0, idle=0;
-    char *restrict savelocale;
+    char *savelocale;
 
     FILE_TO_BUF(UPTIME_FILE,uptime_fd);
-    savelocale = setlocale(LC_NUMERIC, NULL);
+    savelocale = strdup(setlocale(LC_NUMERIC, NULL));
     setlocale(LC_NUMERIC,"C");
     if (sscanf(buf, "%lf %lf", &up, &idle) < 2) {
         setlocale(LC_NUMERIC,savelocale);
+        free(savelocale);
         fputs("bad data in " UPTIME_FILE "\n", stderr);
 	    return 0;
     }
     setlocale(LC_NUMERIC,savelocale);
+    free(savelocale);
     SET_IF_DESIRED(uptime_secs, up);
     SET_IF_DESIRED(idle_secs, idle);
     return up;	/* assume never be zero seconds in practice */
+}
+
+unsigned long getbtime(void) {
+    static unsigned long btime = 0;
+    FILE *f;
+
+    if (btime)
+	return btime;
+
+    /* /proc/stat can get very large on multi-CPU systems so we
+       can't use FILE_TO_BUF */
+    if (!(f = fopen(STAT_FILE, "r"))) {
+	fputs(BAD_OPEN_MESSAGE, stderr);
+	fflush(NULL);
+	_exit(102);
+    }
+
+    while ((fgets(buf, sizeof buf, f))) {
+        if (sscanf(buf, "btime %lu", &btime) == 1)
+            break;
+    }
+    fclose(f);
+
+    if (!btime) {
+	fputs("missing btime in " STAT_FILE "\n", stderr);
+	exit(1);
+    }
+
+    return btime;
 }
 
 /***********************************************************************
@@ -124,24 +166,34 @@ int uptime(double *restrict uptime_secs, double *restrict idle_secs) {
 unsigned long long Hertz;
 
 static void old_Hertz_hack(void){
-  unsigned long long user_j, nice_j, sys_j, other_j;  /* jiffies (clock ticks) */
+  unsigned long long user_j, nice_j, sys_j, other_j, wait_j, hirq_j, sirq_j, stol_j;  /* jiffies (clock ticks) */
   double up_1, up_2, seconds;
   unsigned long long jiffies;
   unsigned h;
-  char *restrict savelocale;
+  char *savelocale;
+  long hz;
 
-  savelocale = setlocale(LC_NUMERIC, NULL);
+#ifdef _SC_CLK_TCK
+  if((hz = sysconf(_SC_CLK_TCK)) > 0){
+    Hertz = hz;
+    return;
+  }
+#endif
+
+  wait_j = hirq_j = sirq_j = stol_j = 0;
+  savelocale = strdup(setlocale(LC_NUMERIC, NULL));
   setlocale(LC_NUMERIC, "C");
   do{
     FILE_TO_BUF(UPTIME_FILE,uptime_fd);  sscanf(buf, "%lf", &up_1);
     /* uptime(&up_1, NULL); */
     FILE_TO_BUF(STAT_FILE,stat_fd);
-    sscanf(buf, "cpu %Lu %Lu %Lu %Lu", &user_j, &nice_j, &sys_j, &other_j);
+    sscanf(buf, "cpu %Lu %Lu %Lu %Lu %Lu %Lu %Lu %Lu", &user_j, &nice_j, &sys_j, &other_j, &wait_j, &hirq_j, &sirq_j, &stol_j);
     FILE_TO_BUF(UPTIME_FILE,uptime_fd);  sscanf(buf, "%lf", &up_2);
     /* uptime(&up_2, NULL); */
   } while((long long)( (up_2-up_1)*1000.0/up_1 )); /* want under 0.1% error */
   setlocale(LC_NUMERIC, savelocale);
-  jiffies = user_j + nice_j + sys_j + other_j;
+  free(savelocale);
+  jiffies = user_j + nice_j + sys_j + other_j + wait_j + hirq_j + sirq_j + stol_j ;
   seconds = (up_1 + up_2) / 2;
   h = (unsigned)( (double)jiffies/seconds/smp_num_cpus );
   /* actual values used by 2.4 kernels: 32 64 100 128 1000 1024 1200 */
@@ -184,7 +236,7 @@ static void old_Hertz_hack(void){
 
 #define NOTE_NOT_FOUND 42
 
-//extern char** environ;
+extern char** environ;
 
 /* for ELF executables, notes are pushed before environment and args */
 static unsigned long find_elf_note(unsigned long findme){
@@ -212,21 +264,25 @@ static int check_for_privs(void){
 static void init_libproc(void) __attribute__((constructor));
 static void init_libproc(void){
   have_privs = check_for_privs();
-  // ought to count CPUs in /proc/stat instead of relying
-  // on glibc, which foolishly tries to parse /proc/cpuinfo
-  //
-  // SourceForge has an old Alpha running Linux 2.2.20 that
-  // appears to have a non-SMP kernel on a 2-way SMP box.
-  // _SC_NPROCESSORS_CONF returns 2, resulting in HZ=512
-  // _SC_NPROCESSORS_ONLN returns 1, which should work OK
-  smp_num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-  if(smp_num_cpus<1) smp_num_cpus=1; /* SPARC glibc is buggy */
+  init_Linux_version(); /* Must be called before we check code */
 
+  cpuinfo();
+
+#ifdef __linux__
   if(linux_version_code > LINUX_VERSION(2, 4, 0)){ 
     Hertz = find_elf_note(AT_CLKTCK);
     if(Hertz!=NOTE_NOT_FOUND) return;
     fputs("2.4+ kernel w/o ELF notes? -- report this\n", stderr);
   }
+#endif /* __linux __ */
+#if defined(__FreeBSD_kernel__) || defined(__FreeBSD__)
+  /* On FreeBSD the Hertz hack is unrelaible, there is no ELF note and
+   * Hertz isn't defined in asm/params.h
+   * See Debian Bug #460331
+   */
+  Hertz = 100;
+  return;
+#endif /* __FreeBSD__ */
   old_Hertz_hack();
 }
 
@@ -303,16 +359,18 @@ void eight_cpu_numbers(double *restrict uret, double *restrict nret, double *res
 /***********************************************************************/
 void loadavg(double *restrict av1, double *restrict av5, double *restrict av15) {
     double avg_1=0, avg_5=0, avg_15=0;
-    char *restrict savelocale;
+    char *savelocale;
     
     FILE_TO_BUF(LOADAVG_FILE,loadavg_fd);
-    savelocale = setlocale(LC_NUMERIC, NULL);
+    savelocale = strdup(setlocale(LC_NUMERIC, NULL));
     setlocale(LC_NUMERIC, "C");
     if (sscanf(buf, "%lf %lf %lf", &avg_1, &avg_5, &avg_15) < 3) {
 	fputs("bad data in " LOADAVG_FILE "\n", stderr);
+	free(savelocale);
 	exit(1);
     }
     setlocale(LC_NUMERIC, savelocale);
+    free(savelocale);
     SET_IF_DESIRED(av1,  avg_1);
     SET_IF_DESIRED(av5,  avg_5);
     SET_IF_DESIRED(av15, avg_15);
@@ -604,7 +662,7 @@ void meminfo(void){
     );
     head = tail+1;
     if(!found) goto nextline;
-    *(found->slot) = strtoul(head,&tail,10);
+    *(found->slot) = (unsigned long)strtoull(head,&tail,10);
 nextline:
     tail = strchr(head, '\n');
     if(!tail) break;
@@ -735,6 +793,10 @@ void vminfo(void){
   };
   const int vm_table_count = sizeof(vm_table)/sizeof(vm_table_struct);
 
+#if __SIZEOF_LONG__ == 4
+  unsigned long long slotll;
+#endif
+
   vm_pgalloc = 0;
   vm_pgrefill = 0;
   vm_pgscan = 0;
@@ -757,7 +819,15 @@ void vminfo(void){
     );
     head = tail+1;
     if(!found) goto nextline;
+#if __SIZEOF_LONG__ == 4
+    // A 32 bit kernel would have already truncated the value, a 64 bit kernel
+    // doesn't need to.  Truncate here to let 32 bit programs to continue to get
+    // truncated values.  It's that or change the API for a larger data type.
+    slotll = strtoull(head,&tail,10);
+    *(found->slot) = (unsigned long)slotll;
+#else
     *(found->slot) = strtoul(head,&tail,10);
+#endif
 nextline:
 
 //if(found) fprintf(stderr,"%s=%d\n",found->name,*(found->slot));
@@ -794,6 +864,18 @@ unsigned int getpartitions_num(struct disk_stat *disks, int ndisks){
 }
 
 /////////////////////////////////////////////////////////////////////////////
+static int is_disk(char *dev)
+{
+  char syspath[32];
+  char *slash;
+
+  while ((slash = strchr(dev, '/')))
+    *slash = '!';
+  snprintf(syspath, sizeof(syspath), "/sys/block/%s", dev);
+  return !(access(syspath, F_OK));
+}
+
+/////////////////////////////////////////////////////////////////////////////
 
 unsigned int getdiskstat(struct disk_stat **disks, struct partition_stat **partitions){
   FILE* fd;
@@ -801,6 +883,7 @@ unsigned int getdiskstat(struct disk_stat **disks, struct partition_stat **parti
   int cPartition = 0;
   int fields;
   unsigned dummy;
+  char devname[32];
 
   *disks = NULL;
   *partitions = NULL;
@@ -813,9 +896,9 @@ unsigned int getdiskstat(struct disk_stat **disks, struct partition_stat **parti
       fclose(fd);
       break;
     }
-    fields = sscanf(buff, " %*d %*d %*s %*u %*u %*u %*u %*u %*u %*u %*u %*u %*u %u", &dummy);
-    if (fields == 1){
-      (*disks) = realloc(*disks, (cDisk+1)*sizeof(struct disk_stat));
+    fields = sscanf(buff, " %*d %*d %15s %*u %*u %*u %*u %*u %*u %*u %*u %*u %*u %u", devname, &dummy);
+    if (fields == 2 && is_disk(devname)){
+      (*disks) = xrealloc(*disks, (cDisk+1)*sizeof(struct disk_stat));
       sscanf(buff,  "   %*d    %*d %15s %u %u %llu %u %u %u %llu %u %u %u %u",
         //&disk_major,
         //&disk_minor,
@@ -835,9 +918,11 @@ unsigned int getdiskstat(struct disk_stat **disks, struct partition_stat **parti
         (*disks)[cDisk].partitions=0;
       cDisk++;
     }else{
-      (*partitions) = realloc(*partitions, (cPartition+1)*sizeof(struct partition_stat));
+      (*partitions) = xrealloc(*partitions, (cPartition+1)*sizeof(struct partition_stat));
       fflush(stdout);
-      sscanf(buff,  "   %*d    %*d %15s %u %llu %u %u",
+      sscanf(buff,  (fields == 2)
+          ? "   %*d    %*d %15s %u %*u %llu %*u %u %*u %llu %*u %*u %*u %*u"
+          : "   %*d    %*d %15s %u %llu %u %llu",
         //&part_major,
         //&part_minor,
         (*partitions)[cPartition].partition_name,
@@ -867,7 +952,7 @@ unsigned int getslabinfo (struct slab_cache **slab){
   while (fgets(buff,BUFFSIZE-1,fd)){
     if(!memcmp("slabinfo - version:",buff,19)) continue; // skip header
     if(*buff == '#')                           continue; // skip comments
-    (*slab) = realloc(*slab, (cSlab+1)*sizeof(struct slab_cache));
+    (*slab) = xrealloc(*slab, (cSlab+1)*sizeof(struct slab_cache));
     sscanf(buff,  "%47s %u %u %u %u",  // allow 47; max seen is 24
       (*slab)[cSlab].name,
       &(*slab)[cSlab].active_objs,
@@ -909,4 +994,23 @@ unsigned get_pid_digits(void){
   }
 out:
   return ret;
+}
+
+///////////////////////////////////////////////////////////////////////////
+
+void cpuinfo (void) {
+  // ought to count CPUs in /proc/stat instead of relying
+  // on glibc, which foolishly tries to parse /proc/cpuinfo
+  // note: that may have been the case but now /proc/stat
+  //       is the default source.  parsing of /proc/cpuinfo
+  //       only occurs if the open on /proc/stat fails
+  //
+  // SourceForge has an old Alpha running Linux 2.2.20 that
+  // appears to have a non-SMP kernel on a 2-way SMP box.
+  // _SC_NPROCESSORS_CONF returns 2, resulting in HZ=512
+  // _SC_NPROCESSORS_ONLN returns 1, which should work OK
+
+  smp_num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  if (smp_num_cpus<1)        /* SPARC glibc is buggy */
+    smp_num_cpus=1;
 }
