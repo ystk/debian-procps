@@ -5,7 +5,9 @@
 
 PACKAGE="procps"
 DEBROOT=$(CURDIR)/debian/tmp
+DEB_BUILD_OPTIONS='nocheck'
 
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 DEB_HOST_ARCH_OS	?= $(shell dpkg-architecture -qDEB_HOST_ARCH_OS)
 DEB_HOST_GNU_TYPE=$(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE=$(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
@@ -15,30 +17,31 @@ else
 CROSS=
 endif
 
-PROCLIB = $(shell basename proc/libproc-*.so)
-CFLAGS=-g
-
 %:
 	dh $@
 
+autogen-files := debian/libprocps0.install debian/libprocps0-dev.install \
+  debian/libprocps0-dev.links
+
+debian/%: debian/%.in 
+	sed -e 's/$${DEB_HOST_MULTIARCH}/$(DEB_HOST_MULTIARCH)/g' $< > $@ 
+
 override_dh_auto_clean:
 	dh_auto_clean
-	if [ -d static ] ; then rm -rf static ; fi
+	rm -f $(autogen-files)
 
-override_dh_auto_build:
-	dh_testdir
+override_dh_auto_configure:
+	./configure \
+	  --build=$(DEB_BUILD_GNU_TYPE) \
+	  --enable-watch8bit --enable-w-from \
+	  --enable-skill \
+	  --prefix=/usr \
+	  --exec-prefix=/ \
+	  --libdir=/usr/lib/$(DEB_HOST_MULTIARCH)
 
-	[ -d static ] || mkdir static
-	$(MAKE) $(CROSS) lib64=lib m64= SHARED=0 CFLAGS="$(CFLAGS)" proc/libproc.a 
-	mv proc/libproc.a static
-	$(MAKE) clean
-	$(MAKE) $(CROSS) W_SHOWFROM=\-DW_SHOWFROM lib64=lib m64= CFLAGS="$(CFLAGS)"
-	( cd static && ln -s /lib/$(PROCLIB) libproc.so )
 
-	touch build-stamp
-
-override_dh_auto_install:
-	$(MAKE) $(CROSS) lib64=lib ln_f="ln -sf" ldconfig=echo DESTDIR=$(DEBROOT) install
+override_dh_auto_install: $(autogen-files)
+	dh_auto_install
 
 	# Rename w as there are two of them
 	(cd $(DEBROOT)/usr/bin && mv w w.procps )
@@ -88,4 +91,7 @@ override_dh_installinit:
 ifeq ($(DEB_HOST_ARCH_OS), linux)
 	dh_installinit --update-rcd-params='start 30 S .' 
 endif
+
+override_dh_makeshlibs:
+	dh_makeshlibs -V 'libprocps0 (>= 1:3.3.2-1)'
 
