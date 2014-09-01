@@ -52,6 +52,7 @@ int check_pid_argument(char *input)
 
 	if (!strncmp("/proc/", input, 6))
 		skip = 6;
+	errno = 0;
 	pid = strtol(input + skip, &end, 10);
 
 	if (errno || input + skip == end || (end && *end))
@@ -63,7 +64,7 @@ int check_pid_argument(char *input)
 
 int main(int argc, char *argv[])
 {
-	char ch;
+	int ch;
 	int retval = 0, i;
 	int alloclen = 128;
 	char *pathbuf;
@@ -74,7 +75,9 @@ int main(int argc, char *argv[])
 		{NULL, 0, 0, 0}
 	};
 
-    program_invocation_name = program_invocation_short_name;
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
+	program_invocation_name = program_invocation_short_name;
+#endif
 	setlocale (LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);

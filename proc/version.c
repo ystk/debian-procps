@@ -1,7 +1,7 @@
 /*
  * Suite version information for procps-ng utilities
  * Copyright (c) 1995 Martin Schulze <joey@infodrom.north.de>
- * Ammended by cblake to only export the function symbol.
+ * Amended by cblake to only export the function symbol.
  *
  * Modified by Albert Cahalan, ????-2003
  *
@@ -45,7 +45,7 @@ void init_Linux_version(void) {
 
 #ifdef __linux__
     static struct utsname uts;
-    
+
     if (uname(&uts) == -1)	/* failure implies impending death */
 	exit(1);
 
@@ -66,7 +66,7 @@ void init_Linux_version(void) {
     fclose(fp);
     version_string_depth = sscanf(buf, "Linux version %d.%d.%d", &x, &y, &z);
 #endif /* __linux__ */
-	
+
     if ((version_string_depth < 2) ||		 /* Non-standard for all known kernels */
        ((version_string_depth < 3) && (x < 3))) /* Non-standard for 2.x.x kernels */
 #ifdef __linux__
@@ -75,6 +75,7 @@ void init_Linux_version(void) {
 		"release %s=%d.%d.%d gives version code %d\n",
 		uts.release, x, y, z, LINUX_VERSION(x,y,z));
 #else
+	fprintf(stderr,		/* *very* unlikely to happen by accident */
 		"%s=%d.%d.%d gives version code %d\n",
 		buf, x, y, z, LINUX_VERSION(x,y,z));
 #endif /* __linux__ */

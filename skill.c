@@ -36,6 +36,7 @@
 
 #include "c.h"
 #include "fileutils.h"
+#include "nsutils.h"
 #include "strutils.h"
 #include "nls.h"
 #include "xalloc.h"
@@ -43,6 +44,7 @@
 #include "proc/sig.h"
 #include "proc/devname.h"
 #include "proc/procps.h"	/* char *user_from_uid(uid_t uid) */
+#include "proc/readproc.h"
 #include "proc/version.h"	/* procps_version */
 #include "rpmatch.h"
 
@@ -56,11 +58,14 @@ struct run_time_conf_t {
 	int noaction;
 	int debugging;
 };
-static int tty_count, uid_count, cmd_count, pid_count;
+static int tty_count, uid_count, cmd_count, pid_count, namespace_count;
 static int *ttys;
 static uid_t *uids;
 static const char **cmds;
 static int *pids;
+static char **namespaces;
+static int ns_pid;
+static proc_t ns_task;
 
 #define ENLIST(thing,addme) do{ \
 if(!thing##s) thing##s = xmalloc(sizeof(*thing##s)*saved_argc); \
@@ -85,6 +90,39 @@ static void display_kill_version(void)
 	fprintf(stdout, PROCPS_NG_VERSION);
 }
 
+static int ns_flags = 0x3f;
+static int parse_namespaces(char *optarg)
+{
+	char *ptr = optarg, *tmp;
+	int len, id;
+
+	ns_flags = 0;
+	while (1) {
+		if (strchr(ptr, ',') == NULL) {
+			len = -1;
+			tmp = strdup(ptr);
+		} else {
+			len = strchr(ptr, ',') - ptr;
+			tmp = strndup(ptr, len);
+		}
+
+		id = get_ns_id(tmp);
+		if (id == -1) {
+			fprintf(stderr, "%s is not a valid namespace\n", tmp);
+			free(tmp);
+			return 1;
+		}
+		ns_flags |= (1 << id);
+		ENLIST(namespace, tmp);
+
+		if (len == -1)
+			break;
+
+		ptr+= len + 1;
+	}
+	return 0;
+}
+
 /* kill or nice a process */
 static void hurt_proc(int tty, int uid, int pid, const char *restrict const cmd,
 		      struct run_time_conf_t *run_time)
@@ -98,7 +136,8 @@ static void hurt_proc(int tty, int uid, int pid, const char *restrict const cmd,
 		fprintf(stderr, "%-8s %-8s %5d %-16.16s   ? ",
 			(char *)dn_buf, user_from_uid(uid), pid, cmd);
 		fflush (stdout);
-		getline(&buf, &len, stdin);
+		if (getline(&buf, &len, stdin) == -1)
+			return;
 		if (rpmatch(buf) < 1) {
 			free(buf);
 			return;
@@ -130,6 +169,7 @@ static void check_proc(int pid, struct run_time_conf_t *run_time)
 {
 	char buf[128];
 	struct stat statbuf;
+	proc_t task;
 	char *tmp;
 	int tty;
 	int fd;
@@ -181,6 +221,16 @@ static void check_proc(int pid, struct run_time_conf_t *run_time)
 				break;
 		if (i == -1)
 			goto closure;
+	}
+	if (ns_pid) {
+		if (ns_read(pid, &task))
+			goto closure;
+		for (i = 0; i < NUM_NS; i++) {
+			if (ns_flags & (1 << i)) {
+				if (task.ns[i] != ns_task.ns[i])
+					goto closure;
+			}
+		}
 	}
 	/* This is where we kill/nice something. */
 	/* for debugging purposes?
@@ -316,6 +366,15 @@ static void __attribute__ ((__noreturn__)) skillsnice_usage(FILE * out)
 		" -t, --tty <tty>          expression is a terminal\n"
 		" -u, --user <username>    expression is a username\n"), out);
 	fputs(USAGE_SEPARATOR, out);
+	fputs(_("Alternatively, expression can be:\n"
+		" --ns <pid>               match the processes that belong to the same\n"
+		"                          namespace as <pid>\n"
+		" --nslist <ns,...>        list which namespaces will be considered for\n"
+		"                          the --ns option.\n"
+		"                          Available namespaces: ipc, mnt, net, pid, user, uts\n"), out);
+
+	fputs(USAGE_SEPARATOR, out);
+	fputs(USAGE_SEPARATOR, out);
 	fputs(USAGE_HELP, out);
 	fputs(USAGE_VERSION, out);
 	if (program == PROG_SKILL) {
@@ -336,7 +395,7 @@ static void __attribute__ ((__noreturn__)) skillsnice_usage(FILE * out)
 	exit(out == stderr ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
-int skill_sig_option(int *argc, char **argv)
+static int skill_sig_option(int *argc, char **argv)
 {
 	int i, nargs = *argc;
 	int signo = -1;
@@ -362,6 +421,7 @@ static void __attribute__ ((__noreturn__))
 {
 	int signo, i;
 	int sigopt = 0;
+	int loop = 1;
 	long pid;
 	int exitvalue = EXIT_SUCCESS;
 
@@ -388,7 +448,8 @@ static void __attribute__ ((__noreturn__))
 	else
 		sigopt++;
 
-	while ((i = getopt_long(argc, argv, "l::Ls:hV", longopts, NULL)) != -1)
+	opterr=0; /* suppress errors on -123 */
+	while (loop == 1 && (i = getopt_long(argc, argv, "l::Ls:hV", longopts, NULL)) != -1)
 		switch (i) {
 		case 'l':
 			if (optarg) {
@@ -415,6 +476,13 @@ static void __attribute__ ((__noreturn__))
 		case 'V':
 			display_kill_version();
 			exit(EXIT_SUCCESS);
+		case '?':
+			if (!isdigit(optopt)) {
+				xwarnx(_("invalid argument %c"), optopt);
+				kill_usage(stderr);
+			}
+			loop=0;
+			break;
 		default:
 			kill_usage(stderr);
 		}
@@ -447,7 +515,7 @@ static void _skillsnice_usage(int line)
 
 /* common skill/snice argument parsing code */
 
-int snice_prio_option(int *argc, char **argv)
+static int snice_prio_option(int *argc, char **argv)
 {
 	int i = 1, nargs = *argc;
 	long prio = DEFAULT_NICE;
@@ -478,6 +546,11 @@ static void skillsnice_parse(int argc,
 	int prino = DEFAULT_NICE;
 	int ch, i;
 
+	enum {
+		NS_OPTION = CHAR_MAX + 1,
+		NSLIST_OPTION,
+	};
+
 	static const struct option longopts[] = {
 		{"command", required_argument, NULL, 'c'},
 		{"debug", no_argument, NULL, 'd'},
@@ -489,6 +562,8 @@ static void skillsnice_parse(int argc,
 		{"table", no_argument, NULL, 'L'},
 		{"tty", required_argument, NULL, 't'},
 		{"user", required_argument, NULL, 'u'},
+		{"ns", required_argument, NULL, NS_OPTION},
+		{"nslist", required_argument, NULL, NSLIST_OPTION},
 		{"verbose", no_argument, NULL, 'v'},
 		{"warnings", no_argument, NULL, 'w'},
 		{"help", no_argument, NULL, 'h'},
@@ -562,6 +637,25 @@ static void skillsnice_parse(int argc,
 				}
 			}
 			break;
+		case NS_OPTION:
+			ns_pid = atoi(optarg);
+			if (ns_pid == 0) {
+				xwarnx(_("invalid pid number %s"), optarg);
+				kill_usage(stderr);
+			}
+			if (ns_read(ns_pid, &ns_task)) {
+				xwarnx(_("error reading reference namespace "
+					 "information"));
+				kill_usage(stderr);
+			}
+
+			break;
+		case NSLIST_OPTION:
+			if (parse_namespaces(optarg)) {
+				xwarnx(_("invalid namespace list"));
+				kill_usage(stderr);
+			}
+			break;
 		case 'v':
 			run_time->verbose = 1;
 			break;
@@ -595,7 +689,7 @@ static void skillsnice_parse(int argc,
 	}
 
 	/* No more arguments to process. Must sanity check. */
-	if (!tty_count && !uid_count && !cmd_count && !pid_count)
+	if (!tty_count && !uid_count && !cmd_count && !pid_count && !ns_pid)
 		xerrx(EXIT_FAILURE, _("no process selection criteria"));
 	if ((run_time->fast | run_time->interactive | run_time->
 	     verbose | run_time->warnings | run_time->noaction) & ~1)
@@ -619,7 +713,9 @@ static void skillsnice_parse(int argc,
 /* main body */
 int main(int argc, char ** argv)
 {
-    program_invocation_name = program_invocation_short_name;
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
+	program_invocation_name = program_invocation_short_name;
+#endif
 	struct run_time_conf_t run_time;
 	memset(&run_time, 0, sizeof(struct run_time_conf_t));
 	my_pid = getpid();

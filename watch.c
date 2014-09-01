@@ -31,15 +31,13 @@
 #include "config.h"
 #include "fileutils.h"
 #include "nls.h"
-#include "proc/procps.h"
 #include "strutils.h"
 #include "xalloc.h"
 #include <ctype.h>
 #include <errno.h>
-#include <errno.h>
 #include <getopt.h>
 #include <locale.h>
-#include <locale.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,11 +46,11 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <termios.h>
-#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #ifdef WITH_WATCH8BIT
 # include <wchar.h>
+# include <wctype.h>
 # include <ncursesw/ncurses.h>
 #else
 # include <ncurses.h>
@@ -251,7 +249,7 @@ static void get_terminal_size(void)
 /* get current time in usec */
 typedef unsigned long long watch_usec_t;
 #define USECS_PER_SEC (1000000ull)
-watch_usec_t get_time_usec()
+static watch_usec_t get_time_usec()
 {
 	struct timeval now;
 	gettimeofday(&now, NULL);
@@ -296,7 +294,11 @@ wint_t my_getwc(FILE * s)
 }
 #endif	/* WITH_WATCH8BIT */
 
-void output_header(char *restrict command, double interval)
+#ifdef WITH_WATCH8BIT
+static void output_header(wchar_t *restrict wcommand, int wcommand_columns, int wcommand_characters, double interval)
+#else
+static void output_header(char *restrict command, double interval)
+#endif	/* WITH_WATCH8BIT */
 {
 	time_t t = time(NULL);
 	char *ts = ctime(&t);
@@ -356,7 +358,7 @@ void output_header(char *restrict command, double interval)
 	return;
 }
 
-int run_command(char *restrict command, char **restrict command_argv)
+static int run_command(char *restrict command, char **restrict command_argv)
 {
 	FILE *p;
 	int x, y;
@@ -434,8 +436,8 @@ int run_command(char *restrict command, char **restrict command_argv)
 							c = carry;
 							carry = WEOF;
 						}
-					} while (c != WEOF && !isprint(c)
-						 && c < 12
+					} while (c != WEOF && !iswprint(c)
+						 && c < 128
 						 && wcwidth(c) == 0
 						 && c != L'\n'
 						 && c != L'\t'
@@ -585,7 +587,9 @@ int main(int argc, char *argv[])
 		{0, 0, 0, 0}
 	};
 
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
 	program_invocation_name = program_invocation_short_name;
+#endif
 	setlocale(LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
@@ -622,8 +626,8 @@ int main(int argc, char *argv[])
 			interval = strtod_or_err(optarg, _("failed to parse argument"));
 			if (interval < 0.1)
 				interval = 0.1;
-			if (interval > ~0u / 1000000)
-				interval = ~0u / 1000000;
+			if (interval > UINT_MAX)
+				interval = UINT_MAX;
 			break;
 		case 'p':
 			precise_timekeeping = 1;
@@ -718,7 +722,11 @@ int main(int argc, char *argv[])
 		}
 
 		if (show_title)
+#ifdef WITH_WATCH8BIT
+			output_header(wcommand, wcommand_columns, wcommand_characters, interval);
+#else
 			output_header(command, interval);
+#endif	/* WITH_WATCH8BIT */
 
 		if (run_command(command, command_argv))
 			break;
@@ -728,7 +736,10 @@ int main(int argc, char *argv[])
 			if (cur_time < next_loop)
 				usleep(next_loop - cur_time);
 		} else
-			usleep(interval * 1000000);
+			if (interval < UINT_MAX / USECS_PER_SEC)
+				usleep(interval * USECS_PER_SEC);
+			else
+				sleep(interval);
 	}
 
 	endwin();

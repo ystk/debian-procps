@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <error.h>
 
 #include <sys/sysmacros.h>
 #include <sys/types.h>
@@ -56,7 +57,16 @@ static void signal_handler(int signo){
     myname,
     procps_version
   );
-  catastrophic_failure(__FILE__, __LINE__, _("please report this bug"));
+  switch (signo) {
+    case SIGHUP:
+    case SIGUSR1:
+    case SIGUSR2:
+      exit(EXIT_FAILURE);
+    default:
+      error_at_line(0, 0, __FILE__, __LINE__, "%s", _("please report this bug"));
+      signal(signo, SIG_DFL);  /* allow core file creation */
+      kill(getpid(), signo);
+  }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////

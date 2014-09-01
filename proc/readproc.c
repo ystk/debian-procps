@@ -60,6 +60,12 @@ static char *src_buffer,
             *dst_buffer;
 #define MAX_BUFSZ 1024*64*2
 
+// dynamic 'utility' buffer support for file2str() calls
+struct utlbuf_s {
+    char *buf;     // dynamically grown buffer
+    int   siz;     // current len of the above
+} utlbuf_s;
+
 #ifndef SIGNAL_STRING
 // convert hex string to unsigned long long
 static unsigned long long unhex(const char *restrict cp){
@@ -353,7 +359,9 @@ ENTER(0x220);
         P->vm_swap = strtol(S,&S,10);
         continue;
     case_Groups:
-    {   int j = strchr(S, '\n') - S;        // currently lines end space + \n
+    {   char *nl = strchr(S, '\n');
+        int j = nl ? (nl - S) : strlen(S);
+
         if (j) {
             P->supgid = xmalloc(j+1);       // +1 in case space disappears
             memcpy(P->supgid, S, j);
@@ -362,8 +370,7 @@ ENTER(0x220);
             for ( ; j; j--)
                 if (' '  == P->supgid[j])
                     P->supgid[j] = ',';
-        } else
-            P->supgid = xstrdup("-");
+        }
         continue;
     }
     case_CapBnd:
@@ -412,6 +419,9 @@ ENTER(0x220);
         P->tid  = Pid;
     }
 
+    if (!P->supgid)
+        P->supgid = xstrdup("-");
+
 LEAVE(0x220);
 }
 
@@ -445,6 +455,47 @@ static void oomadj2proc(const char* S, proc_t *restrict P)
     sscanf(S, "%d", &P->oom_adj);
 }
 #endif
+///////////////////////////////////////////////////////////////////////
+
+static const char *ns_names[] = {
+    [IPCNS] = "ipc",
+    [MNTNS] = "mnt",
+    [NETNS] = "net",
+    [PIDNS] = "pid",
+    [USERNS] = "user",
+    [UTSNS] = "uts",
+};
+
+const char *get_ns_name(int id) {
+    if (id >= NUM_NS)
+        return NULL;
+    return ns_names[id];
+}
+
+int get_ns_id(const char *name) {
+    int i;
+
+    for (i = 0; i < NUM_NS; i++)
+        if (!strcmp(ns_names[i], name))
+            return i;
+    return -1;
+}
+
+static void ns2proc(const char *directory, proc_t *restrict p) {
+    char path[PROCPATHLEN];
+    struct stat sb;
+    int i;
+
+    for (i = 0; i < NUM_NS; i++) {
+        snprintf(path, sizeof(path), "%s/ns/%s", directory, ns_names[i]);
+        if (0 == stat(path, &sb))
+            p->ns[i] = (long)sb.st_ino;
+#if 0
+        else                           // this allows a caller to distinguish
+            p->ns[i] = -errno;         // between the ENOENT or EACCES errors
+#endif
+    }
+}
 ///////////////////////////////////////////////////////////////////////
 
 
@@ -483,7 +534,7 @@ ENTER(0x160);
        "%ld "
        "%lu %"KLF"u %"KLF"u %"KLF"u %"KLF"u %"KLF"u "
        "%*s %*s %*s %*s " /* discard, no RT signals & Linux 2.1 used hex */
-       "%"KLF"u %*lu %*lu "
+       "%"KLF"u %*u %*u "
        "%d %d "
        "%lu %lu",
        &P->state,
@@ -522,18 +573,29 @@ static void statm2proc(const char* s, proc_t *restrict P) {
 /*    fprintf(stderr, "statm2proc converted %d fields.\n",num); */
 }
 
-static int file2str(const char *directory, const char *what, char *ret, int cap) {
-    static char filename[80];
-    int fd, num_read;
+static int file2str(const char *directory, const char *what, struct utlbuf_s *ub) {
+ #define buffGRW 1024
+    char path[PROCPATHLEN];
+    int fd, num, tot_read = 0;
 
-    sprintf(filename, "%s/%s", directory, what);
-    fd = open(filename, O_RDONLY, 0);
-    if(unlikely(fd==-1)) return -1;
-    num_read = read(fd, ret, cap - 1);
+    /* on first use we preallocate a buffer of minimum size to emulate
+       former 'local static' behavior -- even if this read fails, that
+       buffer will likely soon be used for another subdirectory anyway
+       ( besides, with this xcalloc we will never need to use memcpy ) */
+    if (ub->buf) ub->buf[0] = '\0';
+    else ub->buf = xcalloc((ub->siz = buffGRW));
+    sprintf(path, "%s/%s", directory, what);
+    if (-1 == (fd = open(path, O_RDONLY, 0))) return -1;
+    while (0 < (num = read(fd, ub->buf + tot_read, ub->siz - tot_read))) {
+        tot_read += num;
+        if (tot_read < ub->siz) break;
+        ub->buf = xrealloc(ub->buf, (ub->siz += buffGRW));
+    };
+    ub->buf[tot_read] = '\0';
     close(fd);
-    if(unlikely(num_read<=0)) return -1;
-    ret[num_read] = '\0';
-    return num_read;
+    if (unlikely(tot_read < 1)) return -1;
+    return tot_read;
+ #undef buffGRW
 }
 
 static char** file2strvec(const char* directory, const char* what) {
@@ -598,7 +660,7 @@ static char** file2strvec(const char* directory, const char* what) {
 
     // this is the former under utilized 'read_cmdline', which has been
     // generalized in support of these new libproc flags:
-    //     PROC_EDITCGRPCVT, PROC_EDITCMDLCVT
+    //     PROC_EDITCGRPCVT, PROC_EDITCMDLCVT and PROC_EDITENVRCVT
 static int read_unvectored(char *restrict const dst, unsigned sz, const char* whom, const char *what, char sep) {
     char path[PROCPATHLEN];
     int fd;
@@ -652,14 +714,13 @@ static char** vectorize_this_str (const char* src) {
     // It is similar to file2strvec except we filter and concatenate
     // the data into a single string represented as a single vector.
 static void fill_cgroup_cvt (const char* directory, proc_t *restrict p) {
- #define vMAX ( sizeof(dbuf) - (int)(dst - dbuf) )
-    char sbuf[1024], dbuf[1024];
+ #define vMAX ( MAX_BUFSZ - (int)(dst - dst_buffer) )
     char *src, *dst, *grp, *eob;
-    int tot, x, whackable_int = sizeof(dbuf);
+    int tot, x, whackable_int = MAX_BUFSZ;
 
-    *(dst = dbuf) = '\0';                        // empty destination
-    tot = read_unvectored(sbuf, sizeof(sbuf), directory, "cgroup", '\0');
-    for (src = sbuf, eob = sbuf + tot; src < eob; src += x) {
+    *(dst = dst_buffer) = '\0';                  // empty destination
+    tot = read_unvectored(src_buffer, MAX_BUFSZ, directory, "cgroup", '\0');
+    for (src = src_buffer, eob = src_buffer + tot; src < eob; src += x) {
         x = 1;                                   // loop assist
         if (!*src) continue;
         x = strlen((grp = src));
@@ -667,10 +728,10 @@ static void fill_cgroup_cvt (const char* directory, proc_t *restrict p) {
 #if 0
         grp += strspn(grp, "0123456789:");       // jump past group number
 #endif
-        dst += snprintf(dst, vMAX, "%s", (dst > dbuf) ? "," : "");
+        dst += snprintf(dst, vMAX, "%s", (dst > dst_buffer) ? "," : "");
         dst += escape_str(dst, grp, vMAX, &whackable_int);
     }
-    p->cgroup = vectorize_this_str(dbuf[0] ? dbuf : "-");
+    p->cgroup = vectorize_this_str(dst_buffer[0] ? dst_buffer : "-");
  #undef vMAX
 }
 
@@ -687,6 +748,17 @@ static void fill_cmdline_cvt (const char* directory, proc_t *restrict p) {
         escape_command(dst_buffer, p, MAX_BUFSZ, &whackable_int, uFLG);
     p->cmdline = vectorize_this_str(dst_buffer);
  #undef uFLG
+}
+
+    // This routine reads an 'environ' for the designated proc_t and
+    // guarantees the caller a valid proc_t.environ pointer.
+static void fill_environ_cvt (const char* directory, proc_t *restrict p) {
+    int whackable_int = MAX_BUFSZ;
+
+    dst_buffer[0] = '\0';
+    if (read_unvectored(src_buffer, MAX_BUFSZ, directory, "environ", ' '))
+        escape_str(dst_buffer, src_buffer, MAX_BUFSZ, &whackable_int);
+    p->environ = vectorize_this_str(dst_buffer[0] ? dst_buffer : "-");
 }
 
 // warning: interface may change
@@ -722,8 +794,8 @@ int read_cmdline(char *restrict const dst, unsigned sz, unsigned pid) {
 // The pid (tgid? tid?) is already in p, and a path to it in path, with some
 // room to spare.
 static proc_t* simple_readproc(PROCTAB *restrict const PT, proc_t *restrict const p) {
+    static struct utlbuf_s ub = { NULL, 0 };    // buf for stat,statm,status
     static struct stat sb;     // stat() buffer
-    static char sbuf[1024];    // buffer for stat,statm,status
     char *restrict const path = PT->path;
     unsigned flags = PT->flags;
 
@@ -737,19 +809,19 @@ static proc_t* simple_readproc(PROCTAB *restrict const PT, proc_t *restrict cons
     p->egid = sb.st_gid;                        /* need a way to get real gid */
 
     if (flags & PROC_FILLSTAT) {                // read /proc/#/stat
-        if (unlikely(file2str(path, "stat", sbuf, sizeof sbuf) == -1))
+        if (unlikely(file2str(path, "stat", &ub) == -1))
             goto next_proc;
-        stat2proc(sbuf, p);
+        stat2proc(ub.buf, p);
     }
 
     if (flags & PROC_FILLMEM) {                 // read /proc/#/statm
-        if (likely(file2str(path, "statm", sbuf, sizeof sbuf) != -1))
-            statm2proc(sbuf, p);
+        if (likely(file2str(path, "statm", &ub) != -1))
+            statm2proc(ub.buf, p);
     }
 
     if (flags & PROC_FILLSTATUS) {              // read /proc/#/status
-        if (likely(file2str(path, "status", sbuf, sizeof sbuf) != -1)){
-            status2proc(sbuf, p, 1);
+        if (likely(file2str(path, "status", &ub) != -1)){
+            status2proc(ub.buf, p, 1);
             if (flags & PROC_FILLSUPGRP)
                 supgrps_from_supgids(p);
         }
@@ -780,9 +852,12 @@ static proc_t* simple_readproc(PROCTAB *restrict const PT, proc_t *restrict cons
         }
     }
 
-    if (unlikely(flags & PROC_FILLENV))         // read /proc/#/environ
-        p->environ = file2strvec(path, "environ");
-    else
+    if (unlikely(flags & PROC_FILLENV)) {       // read /proc/#/environ
+        if (flags & PROC_EDITENVRCVT)
+            fill_environ_cvt(path, p);
+        else
+            p->environ = file2strvec(path, "environ");
+    } else
         p->environ = NULL;
 
     if (flags & (PROC_FILLCOM|PROC_FILLARG)) {  // read /proc/#/cmdline
@@ -793,8 +868,7 @@ static proc_t* simple_readproc(PROCTAB *restrict const PT, proc_t *restrict cons
     } else
         p->cmdline = NULL;
 
-    if ((flags & PROC_FILLCGROUP)               // read /proc/#/cgroup
-    && linux_version_code >= LINUX_VERSION(2,6,24)) {
+    if ((flags & PROC_FILLCGROUP)) {            // read /proc/#/cgroup
         if (flags & PROC_EDITCGRPCVT)
             fill_cgroup_cvt(path, p);
         else
@@ -804,12 +878,15 @@ static proc_t* simple_readproc(PROCTAB *restrict const PT, proc_t *restrict cons
 
 #ifdef OOMEM_ENABLE
     if (unlikely(flags & PROC_FILLOOM)) {
-        if (likely(file2str(path, "oom_score", sbuf, sizeof sbuf) != -1))
-            oomscore2proc(sbuf, p);
-        if (likely(file2str(path, "oom_adj", sbuf, sizeof sbuf) != -1))
-            oomadj2proc(sbuf, p);
+        if (likely(file2str(path, "oom_score", &ub) != -1))
+            oomscore2proc(ub.buf, p);
+        if (likely(file2str(path, "oom_adj", &ub) != -1))
+            oomadj2proc(ub.buf, p);
     }
 #endif
+
+    if (unlikely(flags & PROC_FILLNS))          // read /proc/#/ns/*
+        ns2proc(path, p);
 
     return p;
 next_proc:
@@ -826,8 +903,8 @@ next_proc:
 // t is the POSIX thread (task group member, generally not the leader)
 // path is a path to the task, with some room to spare.
 static proc_t* simple_readtask(PROCTAB *restrict const PT, const proc_t *restrict const p, proc_t *restrict const t, char *restrict const path) {
+    static struct utlbuf_s ub = { NULL, 0 };    // buf for stat,statm,status
     static struct stat sb;     // stat() buffer
-    static char sbuf[1024];    // buffer for stat,statm,status
     unsigned flags = PT->flags;
 
     if (unlikely(stat(path, &sb) == -1))        /* no such dirent (anymore) */
@@ -840,20 +917,20 @@ static proc_t* simple_readtask(PROCTAB *restrict const PT, const proc_t *restric
     t->egid = sb.st_gid;                        /* need a way to get real gid */
 
     if (flags & PROC_FILLSTAT) {                        // read /proc/#/task/#/stat
-        if (unlikely(file2str(path, "stat", sbuf, sizeof sbuf) == -1))
+        if (unlikely(file2str(path, "stat", &ub) == -1))
             goto next_task;
-        stat2proc(sbuf, t);
+        stat2proc(ub.buf, t);
     }
 
 #ifndef QUICK_THREADS
     if (flags & PROC_FILLMEM)                           // read /proc/#/task/#statm
-        if (likely(file2str(path, "statm", sbuf, sizeof sbuf) != -1))
-            statm2proc(sbuf, t);
+        if (likely(file2str(path, "statm", &ub) != -1))
+            statm2proc(ub.buf, t);
 #endif
 
     if (flags & PROC_FILLSTATUS) {                      // read /proc/#/task/#/status
-        if (likely(file2str(path, "status", sbuf, sizeof sbuf) != -1)) {
-            status2proc(sbuf, t, 0);
+        if (likely(file2str(path, "status", &ub) != -1)) {
+            status2proc(ub.buf, t, 0);
 #ifndef QUICK_THREADS
             if (flags & PROC_FILLSUPGRP)
                 supgrps_from_supgids(t);
@@ -884,15 +961,18 @@ static proc_t* simple_readtask(PROCTAB *restrict const PT, const proc_t *restric
 #ifdef QUICK_THREADS
     if (!p) {
         if (flags & PROC_FILLMEM)
-            if (likely(file2str(path, "statm", sbuf, sizeof sbuf) != -1))
-                statm2proc(sbuf, t);
+            if (likely(file2str(path, "statm", &ub) != -1))
+                statm2proc(ub.buf, t);
 
         if (flags & PROC_FILLSUPGRP)
             supgrps_from_supgids(t);
 #endif
-        if (unlikely(flags & PROC_FILLENV))             // read /proc/#/task/#/environ
-            t->environ = file2strvec(path, "environ");
-        else
+        if (unlikely(flags & PROC_FILLENV)) {           // read /proc/#/task/#/environ
+            if (flags & PROC_EDITENVRCVT)
+                fill_environ_cvt(path, t);
+            else
+                t->environ = file2strvec(path, "environ");
+        } else
             t->environ = NULL;
 
         if (flags & (PROC_FILLCOM|PROC_FILLARG)) {      // read /proc/#/task/#/cmdline
@@ -903,8 +983,7 @@ static proc_t* simple_readtask(PROCTAB *restrict const PT, const proc_t *restric
         } else
             t->cmdline = NULL;
 
-        if ((flags & PROC_FILLCGROUP)                   // read /proc/#/task/#/cgroup
-        && linux_version_code >= LINUX_VERSION(2,6,24)) {
+        if ((flags & PROC_FILLCGROUP)) {                // read /proc/#/task/#/cgroup
             if (flags & PROC_EDITCGRPCVT)
                 fill_cgroup_cvt(path, t);
             else
@@ -933,12 +1012,15 @@ static proc_t* simple_readtask(PROCTAB *restrict const PT, const proc_t *restric
 
 #ifdef OOMEM_ENABLE
     if (unlikely(flags & PROC_FILLOOM)) {
-        if (likely(file2str(path, "oom_score", sbuf, sizeof sbuf) != -1))
-            oomscore2proc(sbuf, t);
-        if (likely(file2str(path, "oom_adj", sbuf, sizeof sbuf) != -1))
-            oomadj2proc(sbuf, t);
+        if (likely(file2str(path, "oom_score", &ub) != -1))
+            oomscore2proc(ub.buf, t);
+        if (likely(file2str(path, "oom_adj", &ub) != -1))
+            oomadj2proc(ub.buf, t);
     }
 #endif
+
+    if (unlikely(flags & PROC_FILLNS))                  // read /proc/#/task/#/ns/*
+        ns2proc(path, t);
 
     return t;
 next_task:
@@ -1210,13 +1292,14 @@ void freeproc(proc_t* p) {
 
 //////////////////////////////////////////////////////////////////////////////////
 void look_up_our_self(proc_t *p) {
-    char sbuf[1024];
+    struct utlbuf_s ub = { NULL, 0 };
 
-    if(file2str("/proc/self", "stat", sbuf, sizeof sbuf) == -1){
+    if(file2str("/proc/self", "stat", &ub) == -1){
         fprintf(stderr, "Error, do this: mount -t proc proc /proc\n");
         _exit(47);
     }
-    stat2proc(sbuf, p);    // parse /proc/self/stat
+    stat2proc(ub.buf, p);  // parse /proc/self/stat
+    free(ub.buf);
 }
 
 HIDDEN_ALIAS(readproc);
@@ -1368,23 +1451,25 @@ proc_data_t *readproctab3 (int(*want_task)(proc_t *buf), PROCTAB *restrict const
  * and filled out proc_t structure.
  */
 proc_t * get_proc_stats(pid_t pid, proc_t *p) {
-	static char path[32], sbuf[1024];
-	struct stat statbuf;
+    struct utlbuf_s ub = { NULL, 0 };
+    static char path[32];
+    struct stat statbuf;
 
-	sprintf(path, "/proc/%d", pid);
-	if (stat(path, &statbuf)) {
-		perror("stat");
-		return NULL;
-	}
+    sprintf(path, "/proc/%d", pid);
+    if (stat(path, &statbuf)) {
+        perror("stat");
+        return NULL;
+    }
 
-	if (file2str(path, "stat", sbuf, sizeof sbuf) >= 0)
-		stat2proc(sbuf, p);	/* parse /proc/#/stat */
-	if (file2str(path, "statm", sbuf, sizeof sbuf) >= 0)
-		statm2proc(sbuf, p);	/* ignore statm errors here */
-	if (file2str(path, "status", sbuf, sizeof sbuf) >= 0)
-		status2proc(sbuf, p, 0 /*FIXME*/);
+    if (file2str(path, "stat", &ub) >= 0)
+        stat2proc(ub.buf, p);
+    if (file2str(path, "statm", &ub) >= 0)
+        statm2proc(ub.buf, p);
+    if (file2str(path, "status", &ub) >= 0)
+        status2proc(ub.buf, p, 0);
 
-	return p;
+    free(ub.buf);
+    return p;
 }
 
 #undef MK_THREAD
