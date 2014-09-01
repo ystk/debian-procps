@@ -72,6 +72,9 @@ static int statMode = VMSTAT;
 /* "-a" means "show active/inactive" */
 static int a_option;
 
+/* "-w" means "wide output" */
+static int w_option;
+
 static unsigned sleep_time = 1;
 static int infinite_updates = 0;
 static unsigned long num_updates;
@@ -87,15 +90,16 @@ static void __attribute__ ((__noreturn__))
 	      _(" %s [options] [delay [count]]\n"),
 		program_invocation_short_name);
 	fputs(USAGE_OPTIONS, out);
-	fputs(_(" -a, --active           active/inactive memory\n"
-		" -f, --forks            number of forks since boot\n"
-		" -m, --slabs            slabinfo\n"
-		" -n, --one-header       do not redisplay header\n"
-		" -s, --stats            event counter statistics\n"
-		" -d, --disk             disk statistics\n"
-		" -D, --disk-sum         summarize disk statistics\n"
-		" -p, --partition <dev>  partition specific statistics\n"
-		" -S, --unit <char>      define display unit\n"), out);
+	fputs(_(" -a, --active           active/inactive memory\n"), out);
+	fputs(_(" -f, --forks            number of forks since boot\n"), out);
+	fputs(_(" -m, --slabs            slabinfo\n"), out);
+	fputs(_(" -n, --one-header       do not redisplay header\n"), out);
+	fputs(_(" -s, --stats            event counter statistics\n"), out);
+	fputs(_(" -d, --disk             disk statistics\n"), out);
+	fputs(_(" -D, --disk-sum         summarize disk statistics\n"), out);
+	fputs(_(" -p, --partition <dev>  partition specific statistics\n"), out);
+	fputs(_(" -S, --unit <char>      define display unit\n"), out);
+	fputs(_(" -w, --wide             wide output\n"), out);
 	fputs(USAGE_SEPARATOR, out);
 	fputs(USAGE_HELP, out);
 	fputs(USAGE_VERSION, out);
@@ -179,9 +183,20 @@ static void new_header(void)
 	/* Translation Hint: Translating folloging header & fields
 	 * that follow (marked with max x chars) might not work,
 	 * unless manual page is translated as well.  */
-	printf(_("procs -----------memory---------- ---swap-- -----io---- -system-- ----cpu----\n"));
-	printf
-	    ("%2s %2s %6s %6s %6s %6s %4s %4s %5s %5s %4s %4s %2s %2s %2s %2s\n",
+
+	const char header[] =
+	    "procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----\n";
+	const char wide_header[] =
+	    "procs ---------------memory-------------- ---swap-- -----io---- -system-- ------cpu-----\n";
+
+	const char format[] =
+	    "%2s %2s %6s %6s %6s %6s %4s %4s %5s %5s %4s %4s %2s %2s %2s %2s %2s\n";
+	const char wide_format[] =
+	    "%2s %2s %8s %8s %8s %8s %4s %4s %5s %5s %4s %4s %2s %2s %2s %2s %2s\n";
+
+	printf(w_option ? _(wide_header) : _(header));
+	printf(
+	    w_option ? wide_format : format,
 	    /* Translation Hint: max 2 chars */
 	     _("r"),
 	    /* Translation Hint: max 2 chars */
@@ -217,10 +232,12 @@ static void new_header(void)
 	    /* Translation Hint: max 2 chars */
 	     _("id"),
 	    /* Translation Hint: max 2 chars */
-	     _("wa"));
+	     _("wa"),
+	    /* Translation Hint: max 2 chars */
+	     _("st"));
 }
 
-static unsigned long unitConvert(unsigned int size)
+static unsigned long unitConvert(unsigned long size)
 {
 	float cvSize;
 	cvSize = (float)size / dataUnit * ((statMode == SLABSTAT) ? 1 : 1024);
@@ -230,7 +247,10 @@ static unsigned long unitConvert(unsigned int size)
 static void new_format(void)
 {
 	const char format[] =
-	    "%2u %2u %6lu %6lu %6lu %6lu %4u %4u %5u %5u %4u %4u %2u %2u %2u %2u\n";
+	    "%2u %2u %6lu %6lu %6lu %6lu %4u %4u %5u %5u %4u %4u %2u %2u %2u %2u %2u\n";
+	const char wide_format[] =
+	    "%2u %2u %8lu %8lu %8lu %8lu %4u %4u %5u %5u %4u %4u %2u %2u %2u %2u %2u\n";
+
 	unsigned int tog = 0;	/* toggle switch for cleaner code */
 	unsigned int i;
 	unsigned int hz = Hertz;
@@ -258,14 +278,15 @@ static void new_format(void)
 	diow = *cpu_iow;
 	dstl = *cpu_zzz;
 	Div = duse + dsys + didl + diow + dstl;
+	if (!Div) Div = 1, didl = 1;
 	divo2 = Div / 2UL;
-	printf(format,
+	printf(w_option ? wide_format : format,
 	       running, blocked,
 	       unitConvert(kb_swap_used), unitConvert(kb_main_free),
 	       unitConvert(a_option?kb_inactive:kb_main_buffers),
 	       unitConvert(a_option?kb_active:kb_main_cached),
-	       (unsigned)( (*pswpin  * unitConvert(kb_per_page) * hz + divo2) / Div ),
-	       (unsigned)( (*pswpout * unitConvert(kb_per_page) * hz + divo2) / Div ),
+	       (unsigned)( (unitConvert(*pswpin  * kb_per_page) * hz + divo2) / Div ),
+	       (unsigned)( (unitConvert(*pswpout * kb_per_page) * hz + divo2) / Div ),
 	       (unsigned)( (*pgpgin		   * hz + divo2) / Div ),
 	       (unsigned)( (*pgpgout		   * hz + divo2) / Div ),
 	       (unsigned)( (*intr		   * hz + divo2) / Div ),
@@ -273,8 +294,8 @@ static void new_format(void)
 	       (unsigned)( (100*duse			+ divo2) / Div ),
 	       (unsigned)( (100*dsys			+ divo2) / Div ),
 	       (unsigned)( (100*didl			+ divo2) / Div ),
-	       (unsigned)( (100*diow			+ divo2) / Div )/*,
-	       (unsigned)( (100*dstl			+ divo2) / Div ) */
+	       (unsigned)( (100*diow			+ divo2) / Div ),
+	       (unsigned)( (100*dstl			+ divo2) / Div )
 	);
 
 	/* main loop */
@@ -312,17 +333,18 @@ static void new_format(void)
 		}
 
 		Div = duse + dsys + didl + diow + dstl;
+		if (!Div) Div = 1, didl = 1;
 		divo2 = Div / 2UL;
-		printf(format,
+		printf(w_option ? wide_format : format,
 		       running,
 		       blocked,
 		       unitConvert(kb_swap_used),unitConvert(kb_main_free),
 		       unitConvert(a_option?kb_inactive:kb_main_buffers),
 		       unitConvert(a_option?kb_active:kb_main_cached),
 		       /*si */
-		       (unsigned)( ( (pswpin [tog] - pswpin [!tog])*unitConvert(kb_per_page)+sleep_half )/sleep_time ),
+		       (unsigned)( ( unitConvert((pswpin [tog] - pswpin [!tog])*kb_per_page)+sleep_half )/sleep_time ),
 		       /* so */
-		       (unsigned)( ( (pswpout[tog] - pswpout[!tog])*unitConvert(kb_per_page)+sleep_half )/sleep_time ),
+		       (unsigned)( ( unitConvert((pswpout[tog] - pswpout[!tog])*kb_per_page)+sleep_half )/sleep_time ),
 		       /* bi */
 		       (unsigned)( (  pgpgin [tog] - pgpgin [!tog]	       +sleep_half )/sleep_time ),
 		       /* bo */
@@ -338,9 +360,9 @@ static void new_format(void)
 		       /* id */
 		       (unsigned)( (100*didl+divo2)/Div ),
 		       /* wa */
-		       (unsigned)( (100*diow+divo2)/Div )/*,
-		       / * st  * /
-		       (unsigned)( (100*dstl+divo2)/Div ) */
+		       (unsigned)( (100*diow+divo2)/Div ),
+		       /* st */
+		       (unsigned)( (100*dstl+divo2)/Div )
 		);
 	}
 }
@@ -717,19 +739,22 @@ int main(int argc, char *argv[])
 		{"disk-sum", no_argument, NULL, 'D'},
 		{"partition", required_argument, NULL, 'p'},
 		{"unit", required_argument, NULL, 'S'},
+		{"wide", no_argument, NULL, 'w'},
 		{"help", no_argument, NULL, 'h'},
 		{"version", no_argument, NULL, 'V'},
 		{NULL, 0, NULL, 0}
 	};
 
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
 	program_invocation_name = program_invocation_short_name;
+#endif
 	setlocale (LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
 	atexit(close_stdout);
 
 	while ((c =
-		getopt_long(argc, argv, "afmnsdDp:S:hV", longopts,
+		getopt_long(argc, argv, "afmnsdDp:S:whV", longopts,
 			    NULL)) != EOF)
 		switch (c) {
 		case 'V':
@@ -792,6 +817,9 @@ int main(int argc, char *argv[])
 		case 's':
 			statMode |= VMSUMSTAT;
 			break;
+		case 'w':
+			w_option = 1;
+			break;
 		default:
 			/* no other aguments defined yet. */
 			usage(stderr);
@@ -814,8 +842,8 @@ int main(int argc, char *argv[])
 		usage(stderr);
 
 	if (moreheaders) {
-		int tmp = winhi() - 3;
-		height = ((tmp > 0) ? tmp : 22);
+		int wheight = winhi() - 3;
+		height = ((wheight > 0) ? wheight : 22);
 	}
 	setlinebuf(stdout);
 	switch (statMode) {

@@ -3,6 +3,7 @@
  *
  * Copyright 2000 Kjetil Torgrim Homme <kjetilho@ifi.uio.no>
  * Changes by Albert Cahalan, 2002,2006.
+ * Changes by Roberto Polli <rpolli@babel.it>, 2012.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -41,8 +42,11 @@
 #define EXIT_FATAL 3
 #define XALLOC_EXIT_CODE EXIT_FATAL
 
+#define CMDSTRSIZE 4096
+
 #include "c.h"
 #include "fileutils.h"
+#include "nsutils.h"
 #include "nls.h"
 #include "xalloc.h"
 #include "proc/readproc.h"
@@ -62,6 +66,7 @@ struct el {
 
 static int opt_full = 0;
 static int opt_long = 0;
+static int opt_longlong = 0;
 static int opt_oldest = 0;
 static int opt_newest = 0;
 static int opt_negate = 0;
@@ -71,6 +76,8 @@ static int opt_signal = SIGTERM;
 static int opt_lock = 0;
 static int opt_case = 0;
 static int opt_echo = 0;
+static int opt_threads = 0;
+static pid_t opt_ns_pid = 0;
 
 static const char *opt_delim = "\n";
 static struct el *opt_pgrp = NULL;
@@ -81,8 +88,12 @@ static struct el *opt_sid = NULL;
 static struct el *opt_term = NULL;
 static struct el *opt_euid = NULL;
 static struct el *opt_ruid = NULL;
+static struct el *opt_nslist = NULL;
 static char *opt_pattern = NULL;
 static char *opt_pidfile = NULL;
+
+/* by default, all namespaces will be checked */
+static int ns_flags = 0x3f;
 
 static int __attribute__ ((__noreturn__)) usage(int opt)
 {
@@ -93,28 +104,34 @@ static int __attribute__ ((__noreturn__)) usage(int opt)
 	fprintf(fp, _(" %s [options] <pattern>\n"), program_invocation_short_name);
 	fputs(USAGE_OPTIONS, fp);
 	if (i_am_pkill == 0) {
-		fputs(_(" -c, --count               count of matching processes\n"
-			" -d, --delimeter <string>  specify output delimeter\n"
-			" -l, --list-name           list PID and process name\n"
-			" -v, --inverse             negates the matching\n"), fp);
+		fputs(_(" -d, --delimiter <string>  specify output delimiter\n"),fp);
+		fputs(_(" -l, --list-name           list PID and process name\n"),fp);
+		fputs(_(" -v, --inverse             negates the matching\n"),fp);
+		fputs(_(" -w, --lightweight         list all TID\n"), fp);
 	}
 	if (i_am_pkill == 1) {
-		fputs(_(" -<sig>, --signal <sig>    signal to send (either number or name)\n"
-			" -e, --echo                display what is killed\n"), fp);
+		fputs(_(" -<sig>, --signal <sig>    signal to send (either number or name)\n"), fp);
+		fputs(_(" -e, --echo                display what is killed\n"), fp);
 	}
-	fputs(_(" -f, --full                use full process name to match\n"
-		" -g, --pgroup <id,...>     match listed process group IDs\n"
-		" -G, --group <gid,...>     match real group IDs\n"
-		" -n, --newest              select most recently started\n"
-		" -o, --oldest              select least recently started\n"
-		" -P, --parent <ppid,...>   match only childs of given parent\n"
-		" -s, --session <sid,...>   match session IDs\n"
-		" -t, --terminal <tty,...>  match by controlling terminal\n"
-		" -u, --euid <id,...>       match by effective IDs\n"
-		" -U, --uid <id,...>        match by real IDs\n"
-		" -x, --exact               match exectly with command name\n"
-		" -F, --pidfile <file>      read PIDs from file\n"
-		" -L, --logpidfile          fail if PID file is not locked\n"), fp);
+	fputs(_(" -c, --count               count of matching processes\n"), fp);
+	fputs(_(" -f, --full                use full process name to match\n"), fp);
+	fputs(_(" -g, --pgroup <id,...>     match listed process group IDs\n"), fp);
+	fputs(_(" -G, --group <gid,...>     match real group IDs\n"), fp);
+	fputs(_(" -n, --newest              select most recently started\n"), fp);
+	fputs(_(" -o, --oldest              select least recently started\n"), fp);
+	fputs(_(" -P, --parent <ppid,...>   match only child processes of the given parent\n"), fp);
+	fputs(_(" -s, --session <sid,...>   match session IDs\n"), fp);
+	fputs(_(" -t, --terminal <tty,...>  match by controlling terminal\n"), fp);
+	fputs(_(" -u, --euid <id,...>       match by effective IDs\n"), fp);
+	fputs(_(" -U, --uid <id,...>        match by real IDs\n"), fp);
+	fputs(_(" -x, --exact               match exactly with the command name\n"), fp);
+	fputs(_(" -F, --pidfile <file>      read PIDs from file\n"), fp);
+	fputs(_(" -L, --logpidfile          fail if PID file is not locked\n"), fp);
+	fputs(_(" --ns <pid>                match the processes that belong to the same\n"
+		"                           namespace as <pid>\n"), fp);
+	fputs(_(" --nslist <ns,...>         list which namespaces will be considered for\n"
+		"                           the --ns option.\n"
+		"                           Available namespaces: ipc, mnt, net, pid, user, uts\n"), fp);
 	fputs(USAGE_SEPARATOR, fp);
 	fputs(USAGE_HELP, fp);
 	fputs(USAGE_VERSION, fp);
@@ -184,23 +201,6 @@ static int strict_atol (const char *restrict str, long *restrict value)
 
 #include <sys/file.h>
 
-/* Seen non-BSD code do this:
- *
- *if (fcntl_lock(pid_fd, F_SETLK, F_WRLCK, SEEK_SET, 0, 0) == -1)
- *                return -1;
- */
-int fcntl_lock(int fd, int cmd, int type, int whence, int start, int len)
-{
-	struct flock lock[1];
-
-	lock->l_type = type;
-	lock->l_whence = whence;
-	lock->l_start = start;
-	lock->l_len = len;
-
-	return fcntl(fd, cmd, lock);
-}
-
 /* We try a read lock. The daemon should have a write lock.
  * Seen using flock: FreeBSD code */
 static int has_flock(int fd)
@@ -241,7 +241,6 @@ static struct el *read_pidfile(void)
 	n = read(fd,buf+1,sizeof buf-2);
 	if (n<1)
 		goto out;
-	buf[n] = '\0';
 	pid = strtoul(buf+1,&endp,10);
 	if(endp<=buf+1 || pid<1 || pid>0x7fffffff)
 		goto out;
@@ -331,6 +330,20 @@ static int conv_str (const char *restrict name, struct el *restrict e)
 }
 
 
+static int conv_ns (const char *restrict name, struct el *restrict e)
+{
+	int rc = conv_str(name, e);
+	int id;
+
+	ns_flags = 0;
+	id = get_ns_id(name);
+	if (id == -1)
+		return 0;
+	ns_flags |= (1 << id);
+
+	return rc;
+}
+
 static int match_numlist (long value, const struct el *restrict list)
 {
 	int found = 0;
@@ -358,6 +371,21 @@ static int match_strlist (const char *restrict value, const struct el *restrict 
 				found = 1;
 		}
 	}
+	return found;
+}
+
+static int match_ns (const proc_t *task, const proc_t *ns_task)
+{
+	int found = 1;
+	int i;
+
+	for (i = 0; i < NUM_NS; i++) {
+		if (ns_flags & (1 << i)) {
+			if (task->ns[i] != ns_task->ns[i])
+				found = 0;
+		}
+	}
+
 	return found;
 }
 
@@ -397,6 +425,8 @@ static PROCTAB *do_openproc (void)
 		flags |= PROC_FILLSTAT;
 	if (!(flags & PROC_FILLSTAT))
 		flags |= PROC_FILLSTATUS;  /* FIXME: need one, and PROC_FILLANY broken */
+	if (opt_ns_pid)
+		flags |= PROC_FILLNS;
 	if (opt_euid && !opt_negate) {
 		int num = opt_euid[0].num;
 		int i = num;
@@ -450,7 +480,10 @@ static struct el * select_procs (int *num)
 	regex_t *preg;
 	pid_t myself = getpid();
 	struct el *list = NULL;
-	char cmd[4096];
+	char cmdline[CMDSTRSIZE];
+	char cmdsearch[CMDSTRSIZE];
+	char cmdoutput[CMDSTRSIZE];
+	proc_t ns_task;
 
 	ptp = do_openproc();
 	preg = do_regcomp();
@@ -460,7 +493,12 @@ static struct el * select_procs (int *num)
 
 	if (opt_newest) saved_pid = 0;
 	if (opt_oldest) saved_pid = INT_MAX;
-	
+	if (opt_ns_pid && ns_read(opt_ns_pid, &ns_task)) {
+		fputs(_("Error reading reference namespace information\n"),
+		      stderr);
+		exit (EXIT_FATAL);
+	}
+
 	memset(&task, 0, sizeof (task));
 	while(readproc(ptp, &task)) {
 		int match = 1;
@@ -485,6 +523,8 @@ static struct el * select_procs (int *num)
 			match = 0;
 		else if (opt_sid && ! match_numlist (task.session, opt_sid))
 			match = 0;
+		else if (opt_ns_pid && ! match_ns (&task, &ns_task))
+			match = 0;
 		else if (opt_term) {
 			if (task.tty == 0) {
 				match = 0;
@@ -495,30 +535,38 @@ static struct el * select_procs (int *num)
 				match = match_strlist (tty, opt_term);
 			}
 		}
-		if (opt_long || (match && opt_pattern)) {
-			if (opt_full && task.cmdline) {
-				int i = 0;
-				int bytes = sizeof (cmd) - 1;
+		if (task.cmdline && (opt_longlong || opt_full) && match && opt_pattern) {
+			int i = 0;
+			int bytes = sizeof (cmdline) - 1;
 
-				/* make sure it is always NUL-terminated */
-				cmd[bytes] = 0;
-				/* make room for SPC in loop below */
-				--bytes;
+			/* make sure it is always NUL-terminated */
+			cmdline[bytes] = 0;
+			/* make room for SPC in loop below */
+			--bytes;
 
-				strncpy (cmd, task.cmdline[i], bytes);
-				bytes -= strlen (task.cmdline[i++]);
-				while (task.cmdline[i] && bytes > 0) {
-					strncat (cmd, " ", bytes);
-					strncat (cmd, task.cmdline[i], bytes);
-					bytes -= strlen (task.cmdline[i++]) + 1;
-				}
-			} else {
-				strcpy (cmd, task.cmd);
+			strncpy (cmdline, task.cmdline[i], bytes);
+			bytes -= strlen (task.cmdline[i++]);
+			while (task.cmdline[i] && bytes > 0) {
+				strncat (cmdline, " ", bytes);
+				strncat (cmdline, task.cmdline[i], bytes);
+				bytes -= strlen (task.cmdline[i++]) + 1;
 			}
 		}
 
+		if (opt_long || opt_longlong || (match && opt_pattern)) {
+			if (opt_longlong && task.cmdline)
+				strncpy (cmdoutput, cmdline, CMDSTRSIZE);
+			else
+				strncpy (cmdoutput, task.cmd, CMDSTRSIZE);
+		}
+
 		if (match && opt_pattern) {
-			if (regexec (preg, cmd, 0, NULL, 0) != 0)
+			if (opt_full && task.cmdline)
+				strncpy (cmdsearch, cmdline, CMDSTRSIZE);
+			else
+				strncpy (cmdsearch, task.cmd, CMDSTRSIZE);
+
+			if (regexec (preg, cmdsearch, 0, NULL, 0) != 0)
 				match = 0;
 		}
 
@@ -543,16 +591,52 @@ static struct el * select_procs (int *num)
 				size = size * 5 / 4 + 4;
 				list = xrealloc(list, size * sizeof *list);
 			}
-			if (list && (opt_long || opt_echo)) {
+			if (list && (opt_long || opt_longlong || opt_echo)) {
 				list[matches].num = task.XXXID;
-				list[matches++].str = xstrdup (cmd);
+				list[matches++].str = xstrdup (cmdoutput);
 			} else if (list) {
 				list[matches++].num = task.XXXID;
 			} else {
 				xerrx(EXIT_FAILURE, _("internal error"));
 			}
+
+			// pkill does not need subtasks!
+			// this control is still done at
+			// argparse time, but a further
+			// control is free
+			if (opt_threads && !i_am_pkill) {
+				proc_t subtask;
+				memset(&subtask, 0, sizeof (subtask));
+				while (readtask(ptp, &task, &subtask)){
+					// don't add redundand tasks
+					if (task.XXXID == subtask.XXXID)
+						continue;
+
+					// eventually grow output buffer
+					if (matches == size) {
+						size = size * 5 / 4 + 4;
+						list = realloc(list, size * sizeof *list);
+						if (list == NULL)
+							exit (EXIT_FATAL);
+					}
+					if (opt_long) {
+						list[matches].str = xstrdup (cmdoutput);
+						list[matches++].num = subtask.XXXID;
+					} else {
+						list[matches++].num = subtask.XXXID;
+					}
+					memset(&subtask, 0, sizeof (subtask));
+				}
+			}
+
+
+
 		}
-		
+
+
+
+
+
 		memset (&task, 0, sizeof (task));
 	}
 	closeproc (ptp);
@@ -560,21 +644,22 @@ static struct el * select_procs (int *num)
 	return list;
 }
 
-int signal_option(int *argc, char **argv)
+static int signal_option(int *argc, char **argv)
 {
 	int sig;
-	int i = 1;
-	while (i < *argc) {
-		sig = signal_name_to_number(argv[i] + 1);
-		if (sig == -1 && isdigit(argv[1][1]))
-			sig = atoi(argv[1] + 1);
-		if (-1 < sig) {
-			memmove(argv + i, argv + i + 1,
-				sizeof(char *) * (*argc - i));
-			(*argc)--;
-			return sig;
+	int i;
+	for (i = 1; i < *argc; i++) {
+		if (argv[i][0] == '-') {
+			sig = signal_name_to_number(argv[i] + 1);
+			if (sig == -1 && isdigit(argv[i][1]))
+				sig = atoi(argv[i] + 1);
+			if (-1 < sig) {
+				memmove(argv + i, argv + i + 1,
+					sizeof(char *) * (*argc - i));
+				(*argc)--;
+				return sig;
+			}
 		}
-		i++;
 	}
 	return -1;
 }
@@ -586,13 +671,16 @@ static void parse_opts (int argc, char **argv)
 	int criteria_count = 0;
 
 	enum {
-		SIGNAL_OPTION = CHAR_MAX + 1
+		SIGNAL_OPTION = CHAR_MAX + 1,
+		NS_OPTION,
+		NSLIST_OPTION,
 	};
 	static const struct option longopts[] = {
 		{"signal", required_argument, NULL, SIGNAL_OPTION},
 		{"count", no_argument, NULL, 'c'},
-		{"delimeter", required_argument, NULL, 'd'},
+		{"delimiter", required_argument, NULL, 'd'},
 		{"list-name", no_argument, NULL, 'l'},
+		{"list-full", no_argument, NULL, 'a'},
 		{"full", no_argument, NULL, 'f'},
 		{"pgroup", required_argument, NULL, 'g'},
 		{"group", required_argument, NULL, 'G'},
@@ -604,10 +692,13 @@ static void parse_opts (int argc, char **argv)
 		{"euid", required_argument, NULL, 'u'},
 		{"uid", required_argument, NULL, 'U'},
 		{"inverse", no_argument, NULL, 'v'},
+		{"lightweight", no_argument, NULL, 'w'},
 		{"exact", no_argument, NULL, 'x'},
 		{"pidfile", required_argument, NULL, 'F'},
 		{"logpidfile", no_argument, NULL, 'L'},
 		{"echo", no_argument, NULL, 'e'},
+		{"ns", required_argument, NULL, NS_OPTION},
+		{"nslist", required_argument, NULL, NSLIST_OPTION},
 		{"help", no_argument, NULL, 'h'},
 		{"version", no_argument, NULL, 'V'},
 		{NULL, 0, NULL, 0}
@@ -623,11 +714,11 @@ static void parse_opts (int argc, char **argv)
 		strcat (opts, "e");
 	} else {
 		/* These options are for pgrep only */
-		strcat (opts, "cld:v");
+		strcat (opts, "lad:vw");
 	}
-			
-	strcat (opts, "LF:fnoxP:g:s:u:U:G:t:?Vh");
-	
+
+	strcat (opts, "LF:cfnoxP:g:s:u:U:G:t:?Vh");
+
 	while ((opt = getopt_long (argc, argv, opts, longopts, NULL)) != -1) {
 		switch (opt) {
 		case SIGNAL_OPTION:
@@ -707,6 +798,9 @@ static void parse_opts (int argc, char **argv)
 		case 'l':   /* Solaris: long output format (pgrep only) Should require -f for beyond argv[0] maybe? */
 			opt_long = 1;
 			break;
+		case 'a':
+			opt_longlong = 1;
+			break;
 		case 'n':   /* Solaris: match only the newest */
 			if (opt_oldest|opt_negate|opt_newest)
 				usage (opt);
@@ -742,12 +836,26 @@ static void parse_opts (int argc, char **argv)
 				usage (opt);
 			opt_negate = 1;
 			break;
+		case 'w':   // Linux: show threads (lightweight process) too
+			opt_threads = 1;
+			break;
 		/* OpenBSD -x, being broken, does a plain string */
 		case 'x':   /* Solaris: use ^(regexp)$ in place of regexp (FreeBSD too) */
 			opt_exact = 1;
 			break;
 /*		case 'z':   / * Solaris: match by zone ID * /
  *			break; */
+		case NS_OPTION:
+			opt_ns_pid = atoi(optarg);
+			if (opt_ns_pid == 0)
+				usage (opt);
+			++criteria_count;
+			break;
+		case NSLIST_OPTION:
+			opt_nslist = split_list (optarg, conv_ns);
+			if (opt_nslist == NULL)
+				usage (opt);
+			break;
 		case 'h':
 			usage (opt);
 			break;
@@ -788,7 +896,9 @@ int main (int argc, char **argv)
 	struct el *procs;
 	int num;
 
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
 	program_invocation_name = program_invocation_short_name;
+#endif
 	setlocale (LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
@@ -810,11 +920,13 @@ int main (int argc, char **argv)
 				continue;
 			xwarn(_("killing pid %ld failed"), procs[i].num);
 		}
+		if (opt_count)
+			fprintf(stdout, "%d\n", num);
 	} else {
 		if (opt_count) {
 			fprintf(stdout, "%d\n", num);
 		} else {
-			if (opt_long)
+			if (opt_long || opt_longlong)
 				output_strlist (procs,num);
 			else
 				output_numlist (procs,num);

@@ -55,6 +55,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <utmp.h>
+#include <arpa/inet.h>
 
 static int ignoreuser = 0;	/* for '-u' */
 static int oldstyle = 0;	/* for '-o' */
@@ -67,6 +68,8 @@ typedef struct utmp utmp_t;
 #else
 # define FROM_STRING "off"
 #endif
+
+#define MAX_CMD_WIDTH	512
 
 /*
  * This routine is careful since some programs leave utmp strings
@@ -82,7 +85,7 @@ static void print_host(const char *restrict host, int len, const int fromlen)
 		len = fromlen;
 	last = host + len;
 	for (; host < last; host++) {
-	    if (*host == '\0') break;
+		if (*host == '\0') break;
 		if (isprint(*host) && *host != ' ') {
 			fputc(*host, stdout);
 			++width;
@@ -101,6 +104,124 @@ static void print_host(const char *restrict host, int len, const int fromlen)
 		fputc(' ', stdout);
 }
 
+
+/* This routine prints the display part of the host or IPv6 link address interface */
+static void print_display_or_interface(const char *restrict host, int len, int restlen)
+{
+	char *disp,*tmp;
+
+	if (restlen <= 0) return; /* not enough space for printing anything */
+
+	/* search for a collon (might be a display) */
+	disp = (char *)host;
+	while ( (disp < (host + len)) && (*disp != ':') && isprint(*disp) ) disp++;
+
+	/* colon found */
+	if (*disp == ':') {
+		/* detect multiple colons -> IPv6 in the host (not a display) */
+		tmp = disp+1;
+		while ( (tmp < (host + len)) && (*tmp != ':') && isprint(*tmp) ) tmp++;
+
+		if (*tmp != ':') { /* multiple colons not found - it's a display */
+
+			/* number of chars till the end of the input field */
+			len -= (disp - host);
+
+			/* if it is still longer than the rest of the output field, then cut it */
+			if (len > restlen) len = restlen;
+
+			/* print the display */
+			while ((len > 0) && isprint(*disp) && (*disp != ' ')) {
+				len--; restlen--;
+				fputc(*disp, stdout);
+				disp++;
+			}
+
+			if ((len > 0) && (*disp != '\0')) { /* space or nonprintable found - replace with dash and stop printing */
+				restlen--;
+				fputc('-', stdout);
+			}
+		} else { /* multiple colons found - it's an IPv6 address */
+
+			/* search for % (interface separator in case of IPv6 link address) */
+			while ( (tmp < (host + len)) && (*tmp != '%') && isprint(*tmp) ) tmp++;
+
+			if (*tmp == '%') { /* interface separator found */
+
+				/* number of chars till the end of the input field */
+				len -= (tmp - host);
+
+				/* if it is still longer than the rest of the output field, then cut it */
+				if (len > restlen) len = restlen;
+
+				/* print the interface */
+				while ((len > 0) && isprint(*tmp) && (*tmp != ' ')) {
+					len--; restlen--;
+					fputc(*tmp, stdout);
+					tmp++;
+				}
+				if ((len > 0) && (*tmp != '\0')) {  /* space or nonprintable found - replace with dash and stop printing */
+					restlen--;
+					fputc('-', stdout);
+				}
+			}
+
+		}
+	}
+
+	/* padding with spaces */
+	while (restlen > 0) {
+		fputc(' ', stdout);
+		restlen--;
+	}
+}
+
+
+/* This routine prints either the hostname or the IP address of the remote */
+static void print_from(const utmp_t *restrict const u, const int ip_addresses, const int fromlen) {
+	char buf[fromlen + 1];
+	char buf_ipv6[INET6_ADDRSTRLEN];
+	int len;
+	int32_t ut_addr_v6[4];      /* IP address of the remote host */
+
+	if (ip_addresses) { /* -i switch used */
+		memcpy(&ut_addr_v6, &u->ut_addr_v6, sizeof(ut_addr_v6));
+		if (IN6_IS_ADDR_V4MAPPED(&ut_addr_v6)) {
+			/* map back */
+			ut_addr_v6[0] = ut_addr_v6[3];
+			ut_addr_v6[1] = 0;
+			ut_addr_v6[2] = 0;
+			ut_addr_v6[3] = 0;
+		}
+		if (ut_addr_v6[1] || ut_addr_v6[2] || ut_addr_v6[3]) {
+			/* IPv6 */
+			if (!inet_ntop(AF_INET6, &ut_addr_v6, buf_ipv6, sizeof(buf_ipv6))) {
+				strcpy(buf, ""); /* invalid address, clean the buffer */
+			} else {
+				strncpy(buf, buf_ipv6, fromlen); /* address valid, copy to buffer */
+			}
+		} else {
+			/* IPv4 */
+			if (!(ut_addr_v6[0] && inet_ntop(AF_INET, &ut_addr_v6[0], buf, sizeof(buf)))) {
+				strcpy(buf, ""); /* invalid address, clean the buffer */
+			}
+		}
+		buf[fromlen] = '\0';
+
+		len = strlen(buf);
+		if (len) { /* IP address is non-empty, print it (and concatenate with display, if present) */
+			fputs(buf, stdout);
+			/* show the display part of the host or IPv6 link addr. interface, if present */
+			print_display_or_interface(u->ut_host, UT_HOSTSIZE, fromlen - len);
+		} else { /* IP address is empty, print the host instead */
+			print_host(u->ut_host, UT_HOSTSIZE, fromlen);
+		}
+	} else {  /* -i switch NOT used */
+		print_host(u->ut_host, UT_HOSTSIZE, fromlen);
+	}
+}
+
+
 /* compact 7 char format for time intervals (belongs in libproc?) */
 static void print_time_ival7(time_t t, int centi_sec, FILE * fout)
 {
@@ -115,10 +236,12 @@ static void print_time_ival7(time_t t, int centi_sec, FILE * fout)
 			fprintf(fout, _(" %2ludays"), t / (24 * 60 * 60));
 		else if (t >= 60 * 60)
 			/* > 1 hour */
+		        /* Translation Hint: Hours:Minutes */
 			fprintf(fout, " %2lu:%02u ", t / (60 * 60),
 				(unsigned)((t / 60) % 60));
 		else if (t > 60)
 			/* > 1 minute */
+		        /* Translation Hint: Minutes:Seconds */
 			fprintf(fout, _(" %2lu:%02um"), t / 60, (unsigned)t % 60);
 		else
 			fprintf(fout, "       ");
@@ -128,12 +251,15 @@ static void print_time_ival7(time_t t, int centi_sec, FILE * fout)
 			fprintf(fout, _(" %2ludays"), t / (24 * 60 * 60));
 		else if (t >= 60 * 60)
 			/* 1 hour or more */
+		        /* Translation Hint: Hours:Minutes */
 			fprintf(fout, _(" %2lu:%02um"), t / (60 * 60),
 				(unsigned)((t / 60) % 60));
 		else if (t > 60)
 			/* 1 minute or more */
+		        /* Translation Hint: Minutes:Seconds */
 			fprintf(fout, " %2lu:%02u ", t / 60, (unsigned)t % 60);
 		else
+		        /* Translation Hint: Seconds:Centiseconds */
 			fprintf(fout, _(" %2lu.%02us"), t, centi_sec);
 	}
 }
@@ -239,7 +365,7 @@ static const proc_t *getproc(const utmp_t * restrict const u,
 }
 
 static void showinfo(utmp_t * u, int formtype, int maxcmd, int from,
-		     const int userlen, const int fromlen)
+		     const int userlen, const int fromlen, const int ip_addresses)
 {
 	unsigned long long jcpu;
 	int ut_pid_found;
@@ -271,7 +397,7 @@ static void showinfo(utmp_t * u, int formtype, int maxcmd, int from,
 	if (formtype) {
 		printf("%-*.*s%-9.8s", userlen + 1, userlen, uname, u->ut_line);
 		if (from)
-			print_host(u->ut_host, UT_HOSTSIZE, fromlen);
+			print_from(u, ip_addresses, fromlen);
 		print_logintime(u->ut_time, stdout);
 		if (*u->ut_line == ':')
 			/* idle unknown for xdm logins */
@@ -291,7 +417,7 @@ static void showinfo(utmp_t * u, int formtype, int maxcmd, int from,
 		printf("%-*.*s%-9.8s", userlen + 1, userlen, u->ut_user,
 		       u->ut_line);
 		if (from)
-			print_host(u->ut_host, UT_HOSTSIZE, fromlen);
+			print_from(u, ip_addresses, fromlen);
 		if (*u->ut_line == ':')
 			/* idle unknown for xdm logins */
 			printf(" ?xdm? ");
@@ -300,7 +426,7 @@ static void showinfo(utmp_t * u, int formtype, int maxcmd, int from,
 	}
 	fputs(" ", stdout);
 	if (likely(best)) {
-		char cmdbuf[512];
+		char cmdbuf[MAX_CMD_WIDTH];
 		escape_command(cmdbuf, best, sizeof cmdbuf, &maxcmd, ESC_ARGS);
 		fputs(cmdbuf, stdout);
 	} else {
@@ -316,11 +442,12 @@ static void __attribute__ ((__noreturn__))
 	fprintf(out,
               _(" %s [options]\n"), program_invocation_short_name);
 	fputs(USAGE_OPTIONS, out);
-	fputs(_(" -h, --no-header     do not print header\n"
-		" -u, --no-current    ignore current process username\n"
-		" -s, --short         short format\n"
-		" -f, --from          show remote hostname field\n"
-		" -o, --old-style     old style output\n"), out);
+	fputs(_(" -h, --no-header     do not print header\n"),out);
+	fputs(_(" -u, --no-current    ignore current process username\n"),out);
+	fputs(_(" -s, --short         short format\n"),out);
+	fputs(_(" -f, --from          show remote hostname field\n"),out);
+	fputs(_(" -o, --old-style     old style output\n"),out);
+	fputs(_(" -i, --ip-addr       display IP address instead of hostname (if possible)\n"), out);
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_("     --help     display this help and exit\n"), out);
 	fputs(USAGE_VERSION, out);
@@ -334,10 +461,17 @@ int main(int argc, char **argv)
 	char *user = NULL, *p;
 	utmp_t *u;
 	struct winsize win;
-	int header = 1, longform = 1, from = 1, maxcmd = 80, ch;
+	int ch;
+	int maxcmd = 80;
 	int userlen = 8;
 	int fromlen = 16;
 	char *env_var;
+
+	/* switches (defaults) */
+	int header = 1;
+	int longform = 1;
+	int from = 1;
+	int ip_addresses = 0;
 
 	enum {
 		HELP_OPTION = CHAR_MAX + 1
@@ -346,15 +480,18 @@ int main(int argc, char **argv)
 	static const struct option longopts[] = {
 		{"no-header", no_argument, NULL, 'h'},
 		{"no-current", no_argument, NULL, 'u'},
-		{"sort", no_argument, NULL, 's'},
+		{"short", no_argument, NULL, 's'},
 		{"from", no_argument, NULL, 'f'},
 		{"old-style", no_argument, NULL, 'o'},
+		{"ip-addr", no_argument, NULL, 'i'},
 		{"help", no_argument, NULL, HELP_OPTION},
 		{"version", no_argument, NULL, 'V'},
 		{NULL, 0, NULL, 0}
 	};
 
+#ifdef HAVE_PROGRAM_INVOCATION_NAME
 	program_invocation_name = program_invocation_short_name;
+#endif
 	setlocale (LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
@@ -365,7 +502,7 @@ int main(int argc, char **argv)
 #endif
 
 	while ((ch =
-		getopt_long(argc, argv, "husfoV", longopts, NULL)) != -1)
+		getopt_long(argc, argv, "husfoVi", longopts, NULL)) != -1)
 		switch (ch) {
 		case 'h':
 			header = 0;
@@ -388,6 +525,10 @@ int main(int argc, char **argv)
 		case 'o':
 			oldstyle = 1;
 			break;
+		case 'i':
+			ip_addresses = 1;
+			from = 1;
+			break;
 		case HELP_OPTION:
 			usage(stdout);
 		default:
@@ -399,11 +540,12 @@ int main(int argc, char **argv)
 
 	/* Get user field length from environment */
 	if ((env_var = getenv("PROCPS_USERLEN")) != NULL) {
+		int ut_namesize = UT_NAMESIZE;
 		userlen = atoi(env_var);
-		if (userlen < 8 || UT_NAMESIZE < userlen) {
+		if (userlen < 8 || ut_namesize < userlen) {
 			xwarnx
-			    (_("User length environment PROCPS_USERLEN must be between 8 and %zu, ignoring.\n"),
-			     UT_NAMESIZE);
+			    (_("User length environment PROCPS_USERLEN must be between 8 and %i, ignoring.\n"),
+			     ut_namesize);
 			userlen = 8;
 		}
 	}
@@ -422,10 +564,14 @@ int main(int argc, char **argv)
 	else if ((p = getenv("COLUMNS")))
 		maxcmd = atoi(p);
 	else
-		maxcmd = 80;
+		maxcmd = MAX_CMD_WIDTH;
 	if (maxcmd < 71)
 		xerrx(EXIT_FAILURE, _("%d column window is too narrow"), maxcmd);
-
+	if (MAX_CMD_WIDTH < maxcmd) {
+		xwarnx(_("%d column width exceeds command buffer size, truncating to %d"),
+		       maxcmd, MAX_CMD_WIDTH);
+		maxcmd = MAX_CMD_WIDTH;
+	}
 	maxcmd -= 21 + userlen + (from ? fromlen : 0) + (longform ? 20 : 0);
 	if (maxcmd < 3)
 		xwarnx(_("warning: screen width %d suboptimal"), win.ws_col);
@@ -434,7 +580,7 @@ int main(int argc, char **argv)
 
 	if (header) {
 		/* print uptime and headers */
-		print_uptime();
+		print_uptime(0);
 		/* Translation Hint: Following five uppercase messages are
 		 * headers. Try to keep alignment intact.  */
 		printf(_("%-*s TTY      "), userlen, _("USER"));
@@ -457,7 +603,7 @@ int main(int argc, char **argv)
 				continue;
 			if (!strncmp(u->ut_user, user, UT_NAMESIZE))
 				showinfo(u, longform, maxcmd, from, userlen,
-					 fromlen);
+					 fromlen, ip_addresses);
 		}
 	} else {
 		for (;;) {
@@ -468,7 +614,7 @@ int main(int argc, char **argv)
 				continue;
 			if (*u->ut_user)
 				showinfo(u, longform, maxcmd, from, userlen,
-					 fromlen);
+					 fromlen, ip_addresses);
 		}
 	}
 	endutent();

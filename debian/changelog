@@ -1,8 +1,143 @@
-procps (1:3.3.3-3) testing-proposed-updates; urgency=medium
+procps (1:3.3.9-7) unstable; urgency=medium
 
-  * 3.3.3-3 Fix ps crash with large process groups Closes: #702965
+  * Fix testsuite kill Closes: #754620, #725743
 
- -- Craig Small <csmall@debian.org>  Thu, 28 Mar 2013 21:03:15 +1100
+ -- Craig Small <csmall@debian.org>  Sun, 13 Jul 2014 22:47:30 +1000
+
+procps (1:3.3.9-6) unstable; urgency=medium
+
+  [ Mauricio Faria de Oliveira ]
+  * Run dh-autoreconf (build-dep on pkg-config fixes autoconf
+    error). (Closes: #749547)
+  * Add libnuma-dev as build-dep for ppc64el.
+
+ -- Craig Small <csmall@debian.org>  Sun, 29 Jun 2014 00:16:17 +1000
+
+procps (1:3.3.9-5) unstable; urgency=medium
+
+  * Bypass vmstat -p test Closes: #743758
+
+ -- Craig Small <csmall@debian.org>  Tue, 27 May 2014 21:00:01 +1000
+
+procps (1:3.3.9-4) unstable; urgency=medium
+
+  * top compiles with libc >= 2.18
+
+ -- Craig Small <csmall@debian.org>  Fri, 28 Feb 2014 22:11:29 +1100
+
+procps (1:3.3.9-3) unstable; urgency=medium
+
+  * Brought patch for sysctl --system forward Closes: #732920
+
+ -- Craig Small <csmall@debian.org>  Wed, 19 Feb 2014 22:11:50 +1100
+
+procps (1:3.3.9-2) unstable; urgency=high
+
+  * Fix /usr/lib/${DEB_HOST_MULTIARCH}/libprocps.so symlink:
+    libprocps3 ships libprocps.so.3, not libprocps.so.1
+    thanks for report and patch Bernd Zeimetz <bzed@debian.org>
+    Closes: #734610
+  * Update to standards 3.9.5 - no change
+  * Removed update-rc.d params as we use headers now
+
+ -- Craig Small <csmall@debian.org>  Fri, 10 Jan 2014 22:24:15 +1100
+
+procps (1:3.3.9-1) unstable; urgency=medium
+
+  * New upstream version
+    -  watch interval capacity was increased Closes: #720445
+    - pwdx no longer fails in a nonexistent locale Closes: #718766
+    - top clarified summary area Mem/Swap stats Closes: #718670
+    - top batch mode -w (width) abend fixed Closes: #721204
+    - top man page removed 'Bd/Ed' mdoc macros Closes: #725713
+    - Skip some tests if kill cannot be found Closes: #725743
+    - Added stolen time to vmstat Closes: #695404
+  * Update to standards 3.9.4 - no change
+
+ -- Craig Small <csmall@debian.org>  Mon, 16 Dec 2013 21:56:39 +1100
+
+procps (1:3.3.8-2) unstable; urgency=low
+
+  * Fixed numa dependencies Closes: #711312
+  * Removed some tests that choked pbuilder Closes: #710851
+
+ -- Craig Small <csmall@debian.org>  Thu, 06 Jun 2013 22:10:37 +1000
+
+procps (1:3.3.8-1) unstable; urgency=low
+
+  * New upstream version
+    - top.1 license changed Closes: #708967
+    - top has NUMA support Now require libnuma-dev for building
+    - top suspend crash fixed Closes: #706259
+    - top %CPU and %MEM columns widths restored Closes: #707648 
+  * libprocps1-dev conflicts with libprocps0-dev Closes: 706920
+  * init script uses --system Closes: #698888
+  * Removed .la file installation
+
+ -- Craig Small <csmall@debian.org>  Mon, 27 May 2013 21:25:22 +1000
+
+procps (1:3.3.7-1) experimental; urgency=low
+
+  * New upstream version
+    -  top adds a powerful new filter feature wherein any
+       window can include or exlude selected fields which
+       contain specific values Closes: #682082, #682083
+    - top user filtering with exclusion Closes: #682086
+  * Removed nocheck to build options Closes: #699716
+  * Minor typo in sysctl.conf fixed Closes: #698482
+
+ -- Craig Small <csmall@debian.org>  Tue, 26 Mar 2013 22:11:49 +1100
+
+procps (1:3.3.6-2) experimental; urgency=low
+
+  * Experimental release
+  * Has build-deps on dejagnu Closes: #699218 
+
+ -- Craig Small <csmall@debian.org>  Sat, 02 Feb 2013 18:09:45 +1100
+
+procps (1:3.3.6-1) unstable; urgency=low
+
+  * New upstream version
+    - top has new inspect (Y key) feature that some program can be run against
+      the selected PID
+    - sysctl.8: format fix in synopsis Closes: #675848
+    - Expose freeproc for libproc Closes: #681653
+    - ps.1: format fix in notes Closes: #692170
+    - Add -c count option to pkill Closes: #693783
+    - vmstat occasional crashes fixed Closes: #677903
+  * libprocps now in Section: libs Closes: #693647
+
+ -- Craig Small <csmall@debian.org>  Tue, 01 Jan 2013 13:47:29 +1100
+
+procps (1:3.3.5-1) unstable; urgency=low
+
+  * New upstream version
+  * Stop SIGFPE on vmstat at times Closes: #677903
+  * Upstream took freebsd bug patch
+  * Second re-release due to 3.3.4-2 required first
+
+ -- Craig Small <csmall@debian.org>  Sun, 18 Nov 2012 08:24:51 +1100
+
+procps (1:3.3.4-2) unstable; urgency=medium
+
+  * Rolled back 3.3.4 API changes Closes: #692063, #691847
+
+ -- Craig Small <csmall@debian.org>  Sun, 04 Nov 2012 22:49:06 +1100
+
+procps (1:3.3.4-1) unstable; urgency=low
+
+  * New upstream version
+    * kill: takes negative pids again Closes: #688731
+    * pgrep: -F doesnt need line feed Closes: #676709
+    * ps: removed bogus ps bogus message Closes: #670592
+    * watch: doesnt crash with wide characters Closes: #675069
+    * pgrep: -a modifies output -f changes matches Closes: #526355
+    * top: add major/minor page fault deltas Closes: #84992
+    * ps: favor truncation of long names over POSIX/UNIX standard Closes:
+      #598089
+  * Added X-Start-Before to init script Closes: #676381
+
+ -- Craig Small <csmall@debian.org>  Mon, 29 Oct 2012 22:12:08 +1100
 
 procps (1:3.3.3-2) unstable; urgency=low
 

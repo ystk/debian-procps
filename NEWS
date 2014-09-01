@@ -1,3 +1,88 @@
+procps-ng-3.3.9
+---------------
+  * kernel namespaces support added to skill, pgrep, ps and top
+  * pidof was reimplemented from scratch (replacing sysvinit pidof)
+  * ps has configurable libselinux support (--enable-libselinux)
+  * ps provides for display of systemd slice unit (--with-systemd)
+  * free can once again report non-zero 'shared' memory
+  * sysctl provides '--system' to ignore missing /etc/sysctl.conf
+  * watch interval capacity was increased - debian #720445
+  * pwdx no longer fails in a nonexistent locale - debian #718766
+  * top clarified summary area Mem/Swap stats - debian #718670
+  * top batch mode -w (width) abend fixed - debian #721204
+  * top man page removed 'Bd/Ed' mdoc macros - debian #725713
+  * top no longer clears screen at exit - redhat #977561
+  * top adapted to potential libnuma stderr message - redhat #998678
+  * top added missing batch mode newline - redhat #1008674
+
+
+procps-ng-3.3.8
+---------------
+  * top adds extensions for linux NUMA/Node capability
+  * top has reverted to former %CPU and %MEM precision
+    but also provides a '--enable-wide-percent' option
+    Debian #707648
+  * eliminate the potential library segmentation fault
+    Debian #706259, RedHat #951391
+  * top now accomodates a window manager like 'screen'
+    RedHat #962022
+  * ps shows systemd unit and user unit for a process
+
+
+procps-ng-3.3.7
+---------------
+
+  * top adds a powerful new filter feature wherein any
+    window can include or exlude selected fields which
+    contain specific values - Debian #682082 & #682083
+  * top preserves user input for later recall and edit
+  * top provides true input editing vs. just backspace
+  * top user filtering with exclusion - Debian #682086
+  * top field management resize errors no longer fatal
+  * top is more responsive to window resize (SIGWINCH)
+  * top will now preserve user's context when signaled
+
+
+procps-ng-3.3.6
+---------------
+
+  * top adds a powerful new feature where the contents
+    of some file or output from a program, pipeline or
+    shell script can be viewed in its own scrollable &
+    searchable window while pausing the normal display
+  * top highlights matches with 'locate/next' commands
+  * top adds summary/task area memory scaling commands
+  * top adds a command to suppress insignificant zeros
+  * top adds a command line sort field override switch
+  * top provides a default PID for kill, nice commands
+  * top allows core dump generation, if a signal would
+  * pmap adds 2 new options based on smaps, -X and -XX
+  * Adjusted pmap pidlist storage Debian #688180
+  * programs will permit core-dumps RedHat #87825, 512857
+  * receiving a signal is not a crash RedHat #871824, 441656
+  * ps: Fixed negative etime RedHat #871819, #433266
+  * pkill -c option returns Debian #693783
+  * pmap uses correct types for memory allocation Debian #688180
+  * expose freeproc, adds function to API Debian #681653
+
+
+procps-ng-3.3.5
+---------------
+  * Bumped SONAME to take into acccount API change
+
+procps-ng-3.3.4
+---------------
+  * Removed ps -aux bogus message
+  * w get -i option to display IP addresses
+  * watch 8bit fixes Debian #675069
+  * Fixed FTBFS for non-linux Debian #677055
+  * pkill -u <uid> doesn't need space Debian #676239
+  * top enables intra-column horizontal scrolling
+  * top can display a task's environment
+  * top can display major/minor pg fault deltas, Debian ##84992
+  * top provides additional control over column widths
+  * top offers user controlled left/right justification
+
 procps-ng-3.3.3
 ---------------
   * watch -g command repeats until something changes
@@ -239,7 +324,7 @@ procps-3.2.0 --> procps-3.2.1
 build even w/ curses in an odd location -- thanks to Segher Boessenkool
 ps: STAT flags for fg process group and session leader
 ps: STAT flags for swapped out process dropped (was broken)
-ps: new -M and Z options for security data (SE Linux, etc.)
+ps: new -M and Z options for security data (SELinux, etc.)
 slabtop: detect broken /proc/slabinfo -- thanks to Fabian Frederick
 slabtop: ensure that error messages show up on the screen -- FF again
 

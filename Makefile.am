@@ -43,10 +43,29 @@ dist_man_MANS = \
 	vmstat.8 \
 	w.1
 
+EXTRA_DIST = \
+	autogen.sh \
+	contrib \
+	COPYING.LIB \
+	misc/git-version-gen \
+	Documentation/CodingStyle \
+	Documentation/TODO \
+	sysctl.conf
+
+if BUILD_PIDOF
+usrbin_exec_PROGRAMS += pidof
+dist_man_MANS += pidof.1
+pidof_SOURCES = pidof.c $(top_srcdir)/lib/fileutils.c
+else
+  EXTRA_DIST += pidof.1
+endif
+
 if BUILD_KILL
 bin_PROGRAMS = kill
 dist_man_MANS += kill.1
-kill_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c
+kill_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c $(top_srcdir)/lib/nsutils.c
+else
+  EXTRA_DIST += kill.1
 endif
 
 if WITH_NCURSES
@@ -66,16 +85,20 @@ if BUILD_SKILL
 usrbin_exec_PROGRAMS += \
 	skill \
 	snice
-skill_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c
-snice_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c
+skill_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c $(top_srcdir)/lib/nsutils.c
+snice_SOURCES = skill.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c $(top_srcdir)/lib/nsutils.c
 dist_man_MANS += \
+	skill.1 \
+	snice.1
+else
+  EXTRA_DIST += \
 	skill.1 \
 	snice.1
 endif
 
 free_SOURCES = free.c $(top_srcdir)/lib/strutils.c $(top_srcdir)/lib/fileutils.c
-pgrep_SOURCES = pgrep.c $(top_srcdir)/lib/fileutils.c
-pkill_SOURCES = pgrep.c $(top_srcdir)/lib/fileutils.c
+pgrep_SOURCES = pgrep.c $(top_srcdir)/lib/fileutils.c $(top_srcdir)/lib/nsutils.c
+pkill_SOURCES = pgrep.c $(top_srcdir)/lib/fileutils.c $(top_srcdir)/lib/nsutils.c
 pmap_SOURCES = pmap.c $(top_srcdir)/lib/fileutils.c
 pwdx_SOURCES = pwdx.c $(top_srcdir)/lib/fileutils.c
 sysctl_SOURCES = sysctl.c $(top_srcdir)/lib/fileutils.c
@@ -88,15 +111,15 @@ if EXAMPLE_FILES
 sysconf_DATA = sysctl.conf
 endif
 
-EXTRA_DIST = \
-	autogen.sh \
-	contrib \
-	COPYING.LIB \
-	Documentation/CodingStyle \
-	Documentation/TODO \
-	$(sysconf_DATA)
-
 procpsngdir = $(docdir)
 dist_procpsng_DATA = \
 	Documentation/BUGS \
 	Documentation/FAQ
+
+BUILT_SOURCES = $(top_srcdir)/.version
+$(top_srcdir)/.version:
+	touch $(top_srcdir)/.version
+	echo $(VERSION) > $@-t && mv $@-t $@
+dist-hook:
+	echo $(VERSION) > $(distdir)/.tarball-version
+

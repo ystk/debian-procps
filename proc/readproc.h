@@ -31,6 +31,18 @@ EXTERN_C_BEGIN
 // neither tgid nor tid seemed correct. (in other words, FIXME)
 #define XXXID tid
 
+enum ns_type {
+    IPCNS = 0,
+    MNTNS,
+    NETNS,
+    PIDNS,
+    USERNS,
+    UTSNS,
+    NUM_NS         // total namespaces (fencepost)
+};
+extern const char *get_ns_name(int id);
+extern int get_ns_id(const char *name);
+
 // Basic data structure which holds all information we can get about a process.
 // (unless otherwise specified, fields are read from /proc/#/stat)
 //
@@ -41,6 +53,9 @@ typedef struct proc_t {
     int
         tid,		// (special)       task id, the POSIX thread ID (see also: tgid)
     	ppid;		// stat,status     pid of parent process
+    unsigned long       // next 2 fields are NOT filled in by readproc
+        maj_delta,      // stat (special) major page faults since last update
+        min_delta;      // stat (special) minor page faults since last update
     unsigned
         pcpu;           // stat (special)  %CPU usage (is not filled in by readproc!!!)
     char
@@ -154,6 +169,8 @@ typedef struct proc_t {
         oom_score,      // oom_score       (badness for OOM killer)
         oom_adj;        // oom_adj         (adjustment to OOM score)
 #endif
+    long
+        ns[NUM_NS];     // (ns subdir)     inode number of namespaces
 } proc_t;
 
 // PROCTAB: data structure holding the persistent information readproc needs
@@ -263,6 +280,7 @@ extern proc_t * get_proc_stats(pid_t pid, proc_t *p);
 #define PROC_FILLCGROUP      0x0200 // alloc and fill in `cgroup`
 #define PROC_FILLSUPGRP      0x0400 // resolve supplementary group id -> group name
 #define PROC_FILLOOM         0x0800 // fill in proc_t oom_score and oom_adj
+#define PROC_FILLNS          0x8000 // fill in proc_t namespace information
 
 #define PROC_LOOSE_TASKS     0x2000 // treat threads as if they were processes
 
@@ -272,6 +290,7 @@ extern proc_t * get_proc_stats(pid_t pid, proc_t *p);
 
 #define PROC_EDITCGRPCVT    0x10000 // edit `cgroup' as single vector
 #define PROC_EDITCMDLCVT    0x20000 // edit `cmdline' as single vector
+#define PROC_EDITENVRCVT    0x40000 // edit `environ' as single vector
 
 // it helps to give app code a few spare bits
 #define PROC_SPARE_1     0x01000000

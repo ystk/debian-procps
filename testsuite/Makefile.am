@@ -13,10 +13,13 @@ if LINUX
 # temporarily disabled on other than linux systems, see commit
 # 3d807ae853b8b4264da156065b34f1447658a8ba
 DEJATOOL += \
-	kill \
 	pmap \
 	slabtop \
 	sysctl
+
+if BUILD_KILL
+DEJATOOL += kill
+endif
 
 DEJATOOL += \
 	free \
@@ -32,10 +35,11 @@ endif
 
 EXTRA_DIST = \
 	config/unix.exp \
-	global-conf.exp \
     free.test/free.exp \
     kill.test/kill.exp \
     lib.test/fileutils.exp \
+    lib.test/fileutils_badfd.sh \
+    lib.test/fileutils_full.sh \
     lib.test/strutils.exp \
     pgrep.test/pgrep.exp \
     pkill.test/pkill.exp \
@@ -48,4 +52,4 @@ EXTRA_DIST = \
     sysctl.test/sysctl_read.exp \
     uptime.test/uptime.exp \
     vmstat.test/vmstat.exp \
-    w.test/w.exp 
+    w.test/w.exp

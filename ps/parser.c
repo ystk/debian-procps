@@ -95,10 +95,14 @@ static const char *parse_uid(char *str, sel_union *ret){
   num = strtoul(str, &endp, 0);
   if(*endp != '\0'){  /* hmmm, try as login name */
     passwd_data = getpwnam(str);
-    if(!passwd_data)    return _("user name does not exist");
-    num = passwd_data->pw_uid;
+    if(!passwd_data){
+      if(!negate_selection) return _("user name does not exist");
+      num = -1;
+    }
+    else
+      num = passwd_data->pw_uid;
   }
-  if(num > 0xfffffffeUL) return _("user ID out of range");
+  if(!negate_selection && (num > 0xfffffffeUL)) return _("user ID out of range");
   ret->uid = num;
   return 0;
 }
@@ -110,10 +114,14 @@ static const char *parse_gid(char *str, sel_union *ret){
   num = strtoul(str, &endp, 0);
   if(*endp != '\0'){  /* hmmm, try as login name */
     group_data = getgrnam(str);
-    if(!group_data)    return _("group name does not exist");
-    num = group_data->gr_gid;
+    if(!group_data){
+      if(!negate_selection) return _("group name does not exist");
+      num = -1;
+    }
+    else
+      num = group_data->gr_gid;
   }
-  if(num > 0xfffffffeUL) return _("group ID out of range");
+  if(!negate_selection && (num > 0xfffffffeUL)) return _("group ID out of range");
   ret->gid = num;
   return 0;
 }
@@ -284,7 +292,7 @@ static const char *parse_sysv_option(void){
       thread_flags |= TF_U_L;
 //      format_modifiers |= FM_L;
       break;
-    case 'M':  // typically the SE Linux context
+    case 'M':  // typically the SELinux context
       trace("-M print security label for Mandatory Access Control\n");
       format_modifiers |= FM_M;
       break;
@@ -1220,35 +1228,6 @@ try_bsd:
   if(err2) goto total_failure;
   err2 = select_bits_setup();
   if(err2) goto total_failure;
-
-  // Feel a need to patch this out? First of all, read the FAQ.
-  // Second of all, talk to me. Without this warning, people can
-  // get seriously confused. Ask yourself if users would freak out
-  // about "ps -aux" suddenly changing behavior if a user "x" were
-  // added to the system.
-  //
-  // Also, a "-x" option is coming. It's already there in fact,
-  // for some non-default personalities. So "ps -ax" will parse
-  // as SysV options... and you're screwed if you've been patching
-  // out the friendly warning. Cut-over is likely to be in 2005.
-#ifdef BUILD_WITH_WHINE
-  // Slackware:
-  //   IMO, people can change old habits if and when user 'x' comes
-  //   along.  I still find this warning to be a POLA violation.  No
-  //   offense...  that's the beauty of open source.  You've got your
-  //   ideas about this, and I have mine, and we're allowed to
-  //   disagree.  Nothing in the UNIX or POSIX standards requires
-  //   this (annoying) warning to be displayed, and we're not
-  //   changing the actual behavior of ps in any way.  I know of no
-  //   other 'ps' that produces this message.
-  if(!(personality & PER_FORCE_BSD))
-    fprintf(stderr, _("warning: bad ps syntax, perhaps a bogus '-'?\n"
-                      "See http://gitorious.org/procps/procps/blobs/master/Documentation/FAQ\n"));
-#endif
-  // Remember: contact procps@freelists.org
-  // if you should feel tempted. Be damn sure you understand all
-  // the issues. The same goes for other stuff too, BTW. Please ask.
-  // I'm happy to justify various implementation choices.
 
   choose_dimensions();
   return 0;
