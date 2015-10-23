@@ -1,3 +1,11 @@
+procps (1:3.2.8-9skerlet1) unstable; urgency=low
+
+  * pmap.c: pmap -x correctly reports Kbytes column and prints
+    summaries for RSS and Dirty (LP: #753124)
+    This patch is ported from Ubuntu bug report
+
+ -- Kazuhiro Hayashi <kazuhiro3.hayashi@toshiba.co.jp>  Fri, 23 Oct 2015 17:58:01 +0900
+
 procps (1:3.2.8-9) unstable; urgency=low
 
   * Fix for patch on cgroup crash Closes: #579824

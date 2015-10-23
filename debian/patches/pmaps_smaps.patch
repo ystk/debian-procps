@@ -3,8 +3,10 @@ Description: provides information for pmap -x option
 Bug-Debian: http://bugs.debian.org/347476
 Bug-Debian: http://bugs.debian.org/505571
 Author: Craig Small <csmall@debian.org>
---- a/pmap.c
-+++ b/pmap.c
+Index: procps-3.2.8/pmap.c
+===================================================================
+--- procps-3.2.8.orig/pmap.c	2008-10-20 01:34:34.000000000 +0600
++++ procps-3.2.8/pmap.c	2011-04-07 08:48:12.320797244 +0600
 @@ -126,24 +126,37 @@
    char buf[32];
    char mapbuf[9600];
@@ -46,7 +48,7 @@ Author: Craig Small <csmall@debian.org>
      }
      if(d_option){
        if(sizeof(KLONG)==4) printf("Address   Kbytes Mode  Offset           Device    Mapping\n");
-@@ -151,12 +164,54 @@
+@@ -151,13 +164,56 @@
      }
    }
  
@@ -54,8 +56,7 @@ Author: Craig Small <csmall@debian.org>
 +  while(fgets(mapbuf,sizeof mapbuf,fp)){
      char flags[32];
      char *tmp; // to clean up unprintables
--    unsigned KLONG start, end, diff;
-+    unsigned KLONG start, end, diff=0;
+     unsigned KLONG start, end, diff;
      unsigned long long file_offset, inode;
      unsigned dev_major, dev_minor;
 +    unsigned long long smap_value;
@@ -101,8 +102,18 @@ Author: Craig Small <csmall@debian.org>
 +      }
 +    }
      sscanf(mapbuf,"%"KLF"x-%"KLF"x %31s %Lx %x:%x %Lu", &start, &end, flags, &file_offset, &dev_major, &dev_minor, &inode);
++    diff = end-start;
  
      if(start > range_high)
+       break;
+@@ -172,7 +228,6 @@
+       tmp++;
+     }
+     
+-    diff = end-start;
+     if(flags[3]=='s') total_shared  += diff;
+     if(flags[3]=='p'){
+       flags[3] = '-';
 @@ -186,16 +241,9 @@
      flags[5] = '\0';
  
@@ -123,7 +134,7 @@ Author: Craig Small <csmall@debian.org>
      }
      if(d_option){
        const char *cp = mapping_name(p, start, diff, mapbuf, 0, dev_major, dev_minor, inode);
-@@ -232,10 +280,12 @@
+@@ -232,16 +280,18 @@
    if(!q_option){
      if(x_option){
        if(sizeof(KLONG)==8){
@@ -135,7 +146,15 @@ Author: Craig Small <csmall@debian.org>
 +          "total kB %15ld %7llu %7llu\n",
 +          (total_shared + total_private_writeable + total_private_readonly) >> 10,
 +          total_rss, (total_shared_dirty+total_private_dirty)
-+
          );
        }else{
          printf("-------- ------- ------- ------- -------\n");
+         printf(
+-          "total kB %7ld       -       -       -\n",
+-          (total_shared + total_private_writeable + total_private_readonly) >> 10
++          "total kB %7ld %7llu %7llu       -\n",
++          (total_shared + total_private_writeable + total_private_readonly) >> 10,
++          total_rss, (total_shared_dirty+total_private_dirty)
+         );
+       }
+     }
